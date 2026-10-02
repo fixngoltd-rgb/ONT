@@ -27,8 +27,10 @@ const setPref = (k, v) => window.ONT && ONT.setPref(k, v);
 let loggedIn = false;
 const clean = (t) => String(t || '').replace(/^﻿/, '').trim();
 
+let sessionCookie = '';
 async function login() {
   ONT.clearSession();
+  sessionCookie = '';
   await native('GET', '/');                       // picks up the first cookie, like a browser
   const tok = clean((await native('POST', '/asp/GetRandCount.asp')).body);
   const user = pref('user', 'root');
@@ -38,19 +40,29 @@ async function login() {
     '&x.X_HW_Token=' + encodeURIComponent(tok);
   const r = await native('POST', '/login.cgi', FORM, body);
   loggedIn = !!r.sid;
+  if (!loggedIn && r.status !== 0) {
+    // Some firmware hands the session id to the page's script instead of a header. Read it from there.
+    const txt = r.body || '';
+    let m = txt.match(/Cookie\s*=\s*["']?(sid=[^"';\s<]+)/i);
+    if (m) sessionCookie = 'Cookie=' + m[1];
+    else if ((m = txt.match(/sid[^0-9a-f]{1,6}([0-9a-f]{32,})/i))) sessionCookie = 'Cookie=sid=' + m[1] + ':Language:chinese:id=1';
+    loggedIn = !!sessionCookie;
+  }
   if (!loggedIn) {
-    const why = r.status === 0 ? 'Cannot reach the router at ' + pref('host', '192.168.100.1') + ' (' + (r.error || 'no reply') + ')'
-      : 'Login failed (HTTP ' + r.status + '). Check username and password in Tools.';
-    throw new Error(why);
+    const snip = (r.body || '').replace(/\s+/g, ' ').slice(0, 500);
+    throw new Error(r.status === 0
+      ? 'Cannot reach the router at ' + pref('host', '192.168.100.1') + ' (' + (r.error || 'no reply') + ')'
+      : 'Login failed: HTTP ' + r.status + (r.location ? ' → ' + r.location : '') + '. Router said: ' + snip);
   }
 }
 const looksLoggedOut = (r) => [301, 302, 401, 403].includes(r.status) || /name=["']?UserName/i.test(r.body || '');
 
 async function api(method, path, headers, body) {
   if (!loggedIn) await login();
-  let r = await native(method, path, headers, body);
+  const withCk = () => Object.assign({}, headers || {}, sessionCookie ? { Cookie: sessionCookie } : {});
+  let r = await native(method, path, withCk(), body);
   if (r.status === 0) throw new Error('Cannot reach the router (' + (r.error || 'no reply') + ')');
-  if (looksLoggedOut(r)) { await login(); r = await native(method, path, headers, body); }
+  if (looksLoggedOut(r)) { await login(); r = await native(method, path, withCk(), body); }
   return r;
 }
 async function token() { return clean((await api('POST', '/asp/GetRandCount.asp')).body); }
