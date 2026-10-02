@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '5';
+const UI_VER = '6';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -120,22 +120,35 @@ async function loadDevices() {
   ]);
   const byKey = {};
   const list = [];
-  parseObjs(dev.body).concat(parseObjs(dhcp.body)).forEach((o) => {
-    const mac = o.f.find((x) => MAC_RE.test(x));
-    const ip = o.f.find((x) => IP_RE.test(x));
-    if (!mac && !ip) return;
+  const get = (mac, ip) => {
     const key = (mac || ip).toLowerCase();
     let d = byKey[key];
-    if (!d) { d = byKey[key] = { mac: null, ip: null, other: [] }; list.push(d); }
-    d.mac = d.mac || mac; d.ip = d.ip || ip;
+    if (!d) { d = byKey[key] = { mac: null, ip: null, name: '', status: '', portType: '', port: '', ipType: '', devType: '', time: '', other: [] }; list.push(d); }
+    d.mac = d.mac || mac || null; d.ip = d.ip || ip || null;
+    return d;
+  };
+  const dash = (x) => (x && x !== '--' ? x : '');
+  // Field order comes from the router's own USERDevice(...) definition.
+  parseObjs(dev.body).forEach((o) => {
+    if (o.type !== 'USERDevice') return;
+    const f = o.f;
+    const mac = MAC_RE.test(f[2] || '') ? f[2] : null, ip = IP_RE.test(f[1] || '') ? f[1] : null;
+    if (!mac && !ip) return;
+    const d = get(mac, ip);
+    d.port = dash(f[3]); d.ipType = dash(f[4]); d.devType = dash(f[5]); d.status = dash(f[6]);
+    d.portType = dash(f[7]); d.time = dash(f[8]); d.name = dash(f[9]);
+  });
+  // The DHCP list: pick up anything the first list didn't have (e.g. devices not currently connected).
+  parseObjs(dhcp.body).forEach((o) => {
+    const mac = o.f.find((x) => MAC_RE.test(x)), ip = o.f.find((x) => IP_RE.test(x));
+    if (!mac && !ip) return;
+    const d = get(mac, ip);
     o.f.forEach((x) => {
-      if (x && x !== d.mac && x !== d.ip && !/^InternetGatewayDevice/.test(x) && !d.other.includes(x)) d.other.push(x);
+      if (x && x !== d.mac && x !== d.ip && !/^InternetGatewayDevice/.test(x) && x !== '--' && !d.other.includes(x) && !/^-?\d+$/.test(x)) d.other.push(x);
     });
+    if (!d.name) d.name = d.other.find((x) => /[a-z]/i.test(x) && !/^[0-9a-f:.-]+$/i.test(x) && !/^(dhcp|static|lan\d*|ssid\d*|wifi)$/i.test(x)) || '';
   });
-  const skip = /^(active|inactive|online|offline|lan\d*|wifi|wlan|ssid\d*|dhcp|static|unknown|true|false|-?\d+)$/i;
-  list.forEach((d) => {
-    d.name = d.other.find((x) => /[a-z]/i.test(x) && !skip.test(x) && !/^[0-9a-f:.-]+$/i.test(x)) || '';
-  });
+  list.forEach((d) => { d.online = /^(online|active)$/i.test(d.status); });
   return list;
 }
 
@@ -183,19 +196,20 @@ views.devices = async function () {
   const [list, blocked] = await Promise.all([loadDevices(), loadBlocked().catch(() => [])]);
   const nicks = getNicks();
   const isBlocked = (m) => m && blocked.some((b) => b.mac === m.toLowerCase());
-  const dn = (d) => (d.mac && nicks[d.mac.toLowerCase()]) || d.name || d.ip || d.mac || '?';
-  list.sort((x, y) => ipNum(x.ip) - ipNum(y.ip));
-  $('#sub').textContent = list.length + ' seen by the router';
+  const dn = (d) => (d.mac && nicks[d.mac.toLowerCase()]) || d.name || d.devType || d.ip || d.mac || '?';
+  list.sort((x, y) => (y.online - x.online) || (ipNum(x.ip) - ipNum(y.ip)));
+  $('#sub').textContent = list.filter((d) => d.online).length + ' online · ' + list.length + ' known';
   $('#view').innerHTML = '<input id="q" placeholder="Search name, IP or MAC" autocapitalize="off" value="' + esc(devQuery) + '" style="margin-bottom:12px"><div id="devs"></div>';
   const draw = () => {
     const q = devQuery.trim().toLowerCase();
     const shown = list.filter((d) => !q || [dn(d), d.ip, d.mac].some((x) => (x || '').toLowerCase().includes(q)));
     $('#devs').innerHTML = shown.length ? '<div class="card">' + shown.map((d) =>
-      '<div class="row" data-i="' + list.indexOf(d) + '"><div class="av">' + esc(((dn(d)).replace(/[^a-z0-9]/gi, '').slice(0, 2) || '?').toUpperCase()) + '</div><div class="grow">' +
+      '<div class="row" data-i="' + list.indexOf(d) + '"><div class="av" style="' + (d.online ? '' : 'opacity:.45') + '">' + esc(((dn(d)).replace(/[^a-z0-9]/gi, '').slice(0, 2) || '?').toUpperCase()) + '</div><div class="grow">' +
       '<div class="name">' + esc(dn(d)) + '</div>' +
       '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
+      '<span class="chip" style="' + (d.online ? 'color:var(--ok);border-color:var(--ok)' : '') + '">' + (d.online ? 'online' : (d.status ? esc(d.status.toLowerCase()) : 'offline')) + '</span>' +
       (isBlocked(d.mac) ? '<span class="chip blocked">blocked</span>' : '') +
-      d.other.filter((x) => x !== d.name).slice(0, 3).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') +
+      [d.portType, d.port, d.ipType].filter(Boolean).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') +
       '</div><span class="sm">›</span></div>').join('') + '</div>'
       : '<div class="empty">' + (list.length ? 'No match' : 'No devices parsed.<br>Open Tools → Raw to see what the router sent.') + '</div>';
     document.querySelectorAll('#devs .row').forEach((row) => {
@@ -210,7 +224,7 @@ function deviceSheet(d, isBlocked, dn) {
   const blocked = isBlocked(d.mac);
   sheet('<h2 style="margin:0 0 4px;font-size:22px">' + esc(dn(d)) + '</h2>' +
     '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
-    '<div style="margin:12px 0">' + d.other.map((x) => '<span class="chip">' + esc(x) + '</span>').join('') + '</div>' +
+    '<div style="margin:12px 0">' + [d.status, d.portType, d.port, d.ipType, d.devType, d.time].concat(d.other).filter(Boolean).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') + '</div>' +
     (d.mac ? '<label>Nickname (kept on this phone)</label><div class="seg" style="flex-wrap:nowrap"><input id="nick" value="' + esc(getNicks()[d.mac.toLowerCase()] || '') + '" placeholder="e.g. Ali\'s iPhone"><button class="b soft" id="nsave">Save</button></div>' : '') +
     '<div style="height:14px"></div>' +
     (d.mac ? (blocked
@@ -296,7 +310,7 @@ views.block = async function () {
     '<div class="card pad"><h2>Filter switch</h2><div class="seg" style="margin-top:8px">' +
     '<button class="b soft sm2" data-p="0" data-r="1">On · mode 0</button>' +
     '<button class="b soft sm2" data-p="1" data-r="1">On · mode 1</button>' +
-    '<button class="b ghost sm2" data-p="1" data-r="0">Off</button></div>' +
+    '<button class="b ghost sm2" data-p="0" data-r="0">Off</button></div>' +
     '<div class="sm" style="margin-top:10px">Which mode is blocklist and which is allowlist is still unconfirmed. Test with a spare device.</div></div>' +
     '<div class="card pad"><h2>Add a MAC address</h2><input id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off">' +
     '<div style="margin-top:12px"><button class="b" id="add" style="width:100%">Add to list</button></div></div>' +

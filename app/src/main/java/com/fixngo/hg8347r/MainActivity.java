@@ -286,6 +286,6 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public int nativeVersion() { return 5; }
+        public int nativeVersion() { return 6; }
     }
 }

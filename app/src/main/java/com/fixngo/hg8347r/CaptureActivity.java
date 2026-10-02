@@ -13,6 +13,9 @@ import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.JavascriptInterface;
+import android.app.AlertDialog;
+import android.webkit.JsResult;
+import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -140,6 +143,25 @@ public class CaptureActivity extends Activity {
                 if (!viaDocStart) v.evaluateJavascript(hook, null);
             }
         });
+        // Without this, WebView silently answers "No" to the portal's confirm() boxes, so Delete never runs.
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onJsAlert(WebView v, String url, String message, JsResult r) {
+                new AlertDialog.Builder(CaptureActivity.this).setMessage(message)
+                        .setPositiveButton("OK", (d, w) -> r.confirm())
+                        .setOnCancelListener(d -> r.cancel()).show();
+                return true;
+            }
+
+            @Override
+            public boolean onJsConfirm(WebView v, String url, String message, JsResult r) {
+                new AlertDialog.Builder(CaptureActivity.this).setMessage(message)
+                        .setPositiveButton("OK", (d, w) -> r.confirm())
+                        .setNegativeButton("Cancel", (d, w) -> r.cancel())
+                        .setOnCancelListener(d -> r.cancel()).show();
+                return true;
+            }
+        });
         web.loadUrl("http://" + host + "/");
     }
 
@@ -193,11 +215,13 @@ public class CaptureActivity extends Activity {
         public void log(String json) {
             try {
                 JSONObject o = new JSONObject(json);
-                String key = o.optString("m") + " " + o.optString("u") + " " + o.optString("b");
+                String u = o.optString("u").replaceAll("([?&])_=\\d+", "$1");
+                if (u.contains("refreshTime.asp") || u.contains("StartFileLoad")) return;
+                String key = o.optString("m") + " " + u + " " + o.optString("b");
                 synchronized (entries) {
                     if (!seen.add(key)) return;
                     StringBuilder sb = new StringBuilder();
-                    sb.append(o.optString("m")).append(' ').append(o.optString("u"));
+                    sb.append(o.optString("m")).append(' ').append(u);
                     String b = o.optString("b");
                     if (!b.isEmpty()) sb.append("\n  body: ").append(b);
                     int st = o.optInt("s", 0);
