@@ -38,7 +38,8 @@ async function login() {
   const body = 'UserName=' + encodeURIComponent(user) +
     '&PassWord=' + encodeURIComponent(btoa(pass)) +
     '&x.X_HW_Token=' + encodeURIComponent(tok);
-  const r = await native('POST', '/login.cgi', FORM, body);
+  // The portal's own login page sets this cookie with script before posting; without it the router rejects the login.
+  const r = await native('POST', '/login.cgi', Object.assign({}, FORM, { Cookie: 'Cookie=body:Language:chinese:id=-1' }), body);
   loggedIn = !!r.sid;
   if (!loggedIn && r.status !== 0) {
     // Some firmware hands the session id to the page's script instead of a header. Read it from there.
