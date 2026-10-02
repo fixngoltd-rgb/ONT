@@ -1,0 +1,320 @@
+'use strict';
+/* HG8347R — clean front end for the Huawei HG8347R portal.
+   All router traffic goes through the native bridge (window.ONT). */
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const MAC_RE = /^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$/i;
+const IP_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+const FORM = { 'Content-Type': 'application/x-www-form-urlencoded' };
+
+/* ------------------------------------------------------------ native bridge */
+const cbs = {};
+let seq = 0;
+window.__cb = (id, res) => { const f = cbs[id]; delete cbs[id]; if (f) f(JSON.parse(res)); };
+function native(method, path, headers, body) {
+  return new Promise((resolve) => {
+    if (!window.ONT) return resolve({ status: 0, body: '', error: 'Not running inside the app' });
+    const id = ++seq;
+    cbs[id] = resolve;
+    ONT.request(id, method, path, JSON.stringify(headers || {}), body || '');
+  });
+}
+const pref = (k, d) => (window.ONT ? ONT.getPref(k, d) : d);
+const setPref = (k, v) => window.ONT && ONT.setPref(k, v);
+
+/* ------------------------------------------------------------ session + api */
+let loggedIn = false;
+const clean = (t) => String(t || '').replace(/^﻿/, '').trim();
+
+async function login() {
+  ONT.clearSession();
+  await native('GET', '/');                       // picks up the first cookie, like a browser
+  const tok = clean((await native('POST', '/asp/GetRandCount.asp')).body);
+  const user = pref('user', 'root');
+  const pass = pref('pass', 'admin');
+  const body = 'UserName=' + encodeURIComponent(user) +
+    '&PassWord=' + encodeURIComponent(btoa(pass)) +
+    '&x.X_HW_Token=' + encodeURIComponent(tok);
+  const r = await native('POST', '/login.cgi', FORM, body);
+  loggedIn = !!r.sid;
+  if (!loggedIn) {
+    const why = r.status === 0 ? 'Cannot reach the router at ' + pref('host', '192.168.100.1') + ' (' + (r.error || 'no reply') + ')'
+      : 'Login failed (HTTP ' + r.status + '). Check username and password in Tools.';
+    throw new Error(why);
+  }
+}
+const looksLoggedOut = (r) => [301, 302, 401, 403].includes(r.status) || /name=["']?UserName/i.test(r.body || '');
+
+async function api(method, path, headers, body) {
+  if (!loggedIn) await login();
+  let r = await native(method, path, headers, body);
+  if (r.status === 0) throw new Error('Cannot reach the router (' + (r.error || 'no reply') + ')');
+  if (looksLoggedOut(r)) { await login(); r = await native(method, path, headers, body); }
+  return r;
+}
+async function token() { return clean((await api('POST', '/asp/GetRandCount.asp')).body); }
+async function postForm(path, fields) {
+  const p = new URLSearchParams();
+  Object.keys(fields).forEach((k) => p.append(k, fields[k]));
+  p.append('x.X_HW_Token', await token());
+  return api('POST', path, FORM, p.toString());
+}
+
+/* ------------------------------------------------------------ parsing */
+const unesc = (s) => s
+  .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+  .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+  .replace(/\\(.)/g, '$1');
+// The portal returns JS like: new Array(new Thing("a","b"), ..., null). Read it without running it.
+function parseObjs(text) {
+  const out = [];
+  const re = /new\s+(?!Array\b)(\w+)\s*\(((?:[^()"']|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')*)\)/g;
+  let m;
+  while ((m = re.exec(text))) {
+    const f = [];
+    const ar = /"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)'|([^,\s][^,]*)/g;
+    let a;
+    while ((a = ar.exec(m[2]))) f.push(unesc(a[1] !== undefined ? a[1] : a[2] !== undefined ? a[2] : a[3].trim()));
+    out.push({ type: m[1], f });
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------ data */
+const MF = '/html/bbsp/macfilter/';
+let blockedMacs = [];
+
+async function loadBlocked() {
+  const r = await api('GET', MF + 'macfilter.asp');
+  const list = [];
+  parseObjs(r.body).forEach((o) => {
+    const mac = o.f.find((x) => MAC_RE.test(x));
+    if (mac) list.push({ mac: mac.toLowerCase(), domain: o.f.find((x) => /^InternetGatewayDevice\./.test(x)) || '' });
+  });
+  blockedMacs = list;
+  return list;
+}
+
+async function loadDevices() {
+  const [dev, dhcp] = await Promise.all([
+    api('POST', '/html/bbsp/common/GetLanUserDevInfo.asp'),
+    api('POST', '/html/bbsp/common/GetLanUserDhcpInfo.asp'),
+  ]);
+  const byKey = {};
+  const list = [];
+  parseObjs(dev.body).concat(parseObjs(dhcp.body)).forEach((o) => {
+    const mac = o.f.find((x) => MAC_RE.test(x));
+    const ip = o.f.find((x) => IP_RE.test(x));
+    if (!mac && !ip) return;
+    const key = (mac || ip).toLowerCase();
+    let d = byKey[key];
+    if (!d) { d = byKey[key] = { mac: null, ip: null, other: [] }; list.push(d); }
+    d.mac = d.mac || mac; d.ip = d.ip || ip;
+    o.f.forEach((x) => {
+      if (x && x !== d.mac && x !== d.ip && !/^InternetGatewayDevice/.test(x) && !d.other.includes(x)) d.other.push(x);
+    });
+  });
+  const skip = /^(active|inactive|online|offline|lan\d*|wifi|wlan|ssid\d*|dhcp|static|unknown|true|false|-?\d+)$/i;
+  list.forEach((d) => {
+    d.name = d.other.find((x) => /[a-z]/i.test(x) && !skip.test(x) && !/^[0-9a-f:.-]+$/i.test(x)) || '';
+  });
+  return list;
+}
+
+/* ------------------------------------------------------------ ui helpers */
+let current = 'devices';
+const TITLES = { devices: 'Devices', wifi: 'Wi-Fi', block: 'Blocking', tools: 'Tools' };
+
+function toast(msg, ms) {
+  const t = $('#toast');
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { t.hidden = true; }, ms || 2600);
+}
+function sheet(html) { $('#panel').innerHTML = html; $('#sheet').hidden = false; }
+function closeSheet() { $('#sheet').hidden = true; }
+$('#sheet .scrim').onclick = closeSheet;
+window.onBack = () => { if (!$('#sheet').hidden) closeSheet(); else if (current !== 'devices') go('devices'); else ONT.exit(); };
+window.onUiUpdated = () => { $('#banner').hidden = false; };
+$('#reload').onclick = () => location.reload();
+$('#refresh').onclick = () => go(current);
+document.querySelectorAll('#tabs button').forEach((b) => { b.onclick = () => go(b.dataset.t); });
+
+function go(tab) {
+  current = tab;
+  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === tab));
+  $('#title').textContent = TITLES[tab];
+  $('#sub').textContent = '';
+  $('#view').innerHTML = '<div class="empty"><span class="spin"></span></div>';
+  views[tab]().catch((e) => {
+    $('#view').innerHTML = '<div class="card pad"><b class="err">Something went wrong</b><div class="sm" style="margin-top:6px">' +
+      esc(e.message || e) + '</div><div style="margin-top:12px"><button class="b" id="retry">Try again</button></div></div>';
+    $('#retry').onclick = () => go(tab);
+  });
+}
+const initials = (d) => ((d.name || d.ip || '?').replace(/[^a-z0-9]/gi, '').slice(0, 2) || '?').toUpperCase();
+
+/* ------------------------------------------------------------ views */
+const views = {};
+
+views.devices = async function () {
+  const [list, blocked] = await Promise.all([loadDevices(), loadBlocked().catch(() => [])]);
+  const isBlocked = (m) => m && blocked.some((b) => b.mac === m.toLowerCase());
+  $('#sub').textContent = list.length + ' seen by the router';
+  if (!list.length) { $('#view').innerHTML = '<div class="empty">No devices parsed.<br>Open Tools → Raw to see what the router sent.</div>'; return; }
+  $('#view').innerHTML = '<div class="card">' + list.map((d, i) =>
+    '<div class="row" data-i="' + i + '"><div class="av">' + esc(initials(d)) + '</div><div class="grow">' +
+    '<div class="name">' + esc(d.name || d.ip || d.mac) + '</div>' +
+    '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
+    (isBlocked(d.mac) ? '<span class="chip blocked">blocked</span>' : '') +
+    d.other.filter((x) => x !== d.name).slice(0, 4).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') +
+    '</div><span class="sm">›</span></div>').join('') + '</div>';
+  document.querySelectorAll('#view .row').forEach((row) => {
+    row.onclick = () => deviceSheet(list[+row.dataset.i], isBlocked);
+  });
+};
+
+function deviceSheet(d, isBlocked) {
+  const blocked = isBlocked(d.mac);
+  sheet('<h2 style="margin:0 0 4px;font-size:22px">' + esc(d.name || d.ip || d.mac) + '</h2>' +
+    '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
+    '<div style="margin:12px 0">' + d.other.map((x) => '<span class="chip">' + esc(x) + '</span>').join('') + '</div>' +
+    (d.mac ? (blocked
+      ? '<button class="b soft" id="act" style="width:100%">Unblock this device</button>'
+      : '<button class="b bad" id="act" style="width:100%">Block this device</button>') : '') +
+    '<button class="b ghost" id="x" style="width:100%;margin-top:10px">Close</button>');
+  $('#x').onclick = closeSheet;
+  const act = $('#act');
+  if (act) act.onclick = async () => {
+    if (act.dataset.c !== '1') { act.dataset.c = '1'; act.textContent = 'Tap again to confirm'; return; }
+    act.disabled = true;
+    try {
+      if (blocked) await unblockMac(d.mac); else await blockMac(d.mac);
+      closeSheet(); toast(blocked ? 'Unblock sent' : 'Block sent'); go('devices');
+    } catch (e) { toast(e.message); act.disabled = false; }
+  };
+}
+
+views.wifi = async function () {
+  // Read the current SSID from the router so nothing is hard-coded.
+  const l = await api('GET', '/html/amp/common/wlan_list.asp');
+  const info = parseObjs(l.body).find((o) => o.type === 'stWlanInfo' && /WLANConfiguration\.1$/.test(o.f[0]));
+  const ssid = info ? info.f[2] : pref('ssid', '');
+  $('#view').innerHTML = '<div class="card pad"><h2>2.4 GHz network</h2>' +
+    '<label>Network name</label><input id="ssid" value="' + esc(ssid) + '" autocapitalize="off">' +
+    '<label>New password (8–63 characters)</label><input id="pw" autocapitalize="off" autocomplete="off" placeholder="Type the new password">' +
+    '<div style="margin-top:16px"><button class="b" id="go" style="width:100%">Change password</button></div>' +
+    '<div class="sm" style="margin-top:10px">Everything connected over Wi-Fi, including this phone, drops and has to rejoin with the new password.</div></div>';
+  $('#go').onclick = async () => {
+    const pw = $('#pw').value, name = $('#ssid').value.trim();
+    if (pw.length < 8 || pw.length > 63) return toast('Password must be 8–63 characters');
+    if (!name) return toast('Network name is empty');
+    const b = $('#go');
+    if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Tap again to confirm'; return; }
+    b.disabled = true;
+    try {
+      const r = await postForm('/html/amp/wlanbasic/set.cgi?w=InternetGatewayDevice.X_HW_DEBUG.AMP.WifiCoverSetWlanBasic' +
+        '&y=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1' +
+        '&z=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.WPS' +
+        '&k=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1' +
+        '&RequestFile=html/amp/wlanbasic/WlanBasic.asp', {
+        'y.Enable': '1', 'y.SSIDAdvertisementEnabled': '1', 'y.SSID': name, 'y.X_HW_AssociateNum': '32',
+        'y.BeaconType': 'WPAand11i', 'y.X_HW_WPAand11iAuthenticationMode': 'PSKAuthentication',
+        'y.X_HW_WPAand11iEncryptionModes': 'TKIPandAESEncryption', 'k.PreSharedKey': pw,
+        'y.X_HW_GroupRekey': '3600', 'z.Enable': '0', 'z.X_HW_ConfigMethod': 'PushButton',
+        'w.SsidInst': '1', 'w.SSID': name, 'w.Enable': '1', 'w.Standard': '11bgn',
+        'w.BasicAuthenticationMode': 'None', 'w.BasicEncryptionModes': 'TKIPandAESEncryption',
+        'w.WPAAuthenticationMode': 'EAPAuthentication', 'w.WPAEncryptionModes': 'TKIPandAESEncryption',
+        'w.IEEE11iAuthenticationMode': 'EAPAuthentication', 'w.IEEE11iEncryptionModes': 'TKIPandAESEncryption',
+        'w.MixAuthenticationMode': 'PSKAuthentication', 'w.MixEncryptionModes': 'TKIPandAESEncryption',
+        'w.BeaconType': 'WPAand11i', 'w.WEPEncryptionLevel': '104-bit', 'w.WEPKeyIndex': '1', 'w.Key': pw,
+      });
+      toast(r.status < 400 ? 'Sent. Rejoin Wi-Fi with the new password.' : 'Router said HTTP ' + r.status, 5000);
+    } catch (e) { toast(e.message); }
+    b.disabled = false; b.dataset.c = ''; b.textContent = 'Change password';
+  };
+};
+
+async function blockMac(mac) {
+  return postForm(MF + 'add.cgi?x=InternetGatewayDevice.X_HW_Security.MacFilter&RequestFile=html/bbsp/macfilter/macfilter.asp',
+    { 'x.SourceMACAddress': mac });
+}
+async function unblockMac(mac) {
+  // Delete request was not captured yet: this follows the standard Huawei pattern. Verify with Raw if it fails.
+  const list = await loadBlocked();
+  const e = list.find((x) => x.mac === mac.toLowerCase());
+  if (!e || !e.domain) throw new Error('Could not find that entry on the filter page');
+  return postForm(MF + 'del.cgi?x=' + encodeURIComponent(e.domain).replace(/%2E/g, '.') +
+    '&RequestFile=html/bbsp/macfilter/macfilter.asp', {});
+}
+const FURL = MF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&RequestFile=html/bbsp/macfilter/macfilter.asp';
+
+views.block = async function () {
+  const list = await loadBlocked();
+  $('#sub').textContent = list.length + ' in the filter list';
+  $('#view').innerHTML =
+    '<div class="card pad"><h2>Filter switch</h2><div class="seg" style="margin-top:8px">' +
+    '<button class="b soft sm2" data-p="0" data-r="1">On · mode 0</button>' +
+    '<button class="b soft sm2" data-p="1" data-r="1">On · mode 1</button>' +
+    '<button class="b ghost sm2" data-p="1" data-r="0">Off</button></div>' +
+    '<div class="sm" style="margin-top:10px">Which mode is blocklist and which is allowlist is still unconfirmed. Test with a spare device.</div></div>' +
+    '<div class="card pad"><h2>Add a MAC address</h2><input id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off">' +
+    '<div style="margin-top:12px"><button class="b" id="add" style="width:100%">Add to list</button></div></div>' +
+    '<div class="card"><h2 style="padding-top:12px">In the list</h2>' +
+    (list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + esc(x.mac) + '</div></div>' +
+      '<button class="b ghost sm2" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Empty</div>') + '</div>';
+  document.querySelectorAll('button[data-p]').forEach((b) => b.onclick = async () => {
+    try { await postForm(FURL, { 'x.MacFilterPolicy': b.dataset.p, 'x.MacFilterRight': b.dataset.r }); toast('Sent'); }
+    catch (e) { toast(e.message); }
+  });
+  $('#add').onclick = async () => {
+    const mac = $('#mac').value.trim();
+    if (!MAC_RE.test(mac)) return toast('That is not a valid MAC address');
+    try { await blockMac(mac); toast('Added'); go('block'); } catch (e) { toast(e.message); }
+  };
+  document.querySelectorAll('button[data-u]').forEach((b) => b.onclick = async () => {
+    if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Sure?'; return; }
+    try { await unblockMac(list[+b.dataset.u].mac); toast('Remove sent'); go('block'); } catch (e) { toast(e.message); }
+  });
+};
+
+views.tools = async function () {
+  $('#view').innerHTML =
+    '<div class="card pad"><h2>Router</h2>' +
+    '<label>Address</label><input id="host" value="' + esc(pref('host', '192.168.100.1')) + '" autocapitalize="off">' +
+    '<label>Username</label><input id="user" value="' + esc(pref('user', 'root')) + '" autocapitalize="off">' +
+    '<label>Password</label><input id="pass" type="password" value="' + esc(pref('pass', 'admin')) + '">' +
+    '<div style="margin-top:14px"><button class="b" id="save">Save</button></div></div>' +
+    '<div class="card pad"><h2>Raw request</h2>' +
+    '<label>Path</label><input id="rp" value="/html/bbsp/common/GetLanUserDevInfo.asp" autocapitalize="off">' +
+    '<div class="seg" style="margin-top:10px"><select id="rm" style="width:auto"><option>POST</option><option>GET</option></select>' +
+    '<button class="b" id="rs">Send</button><button class="b ghost" id="rc">Copy</button></div>' +
+    '<label>Body (POST, form-encoded)</label><textarea id="rb" placeholder="a=1&b=2"></textarea>' +
+    '<div class="seg" style="margin-top:8px">' +
+    '<button class="b soft sm2" data-q="/html/bbsp/common/GetLanUserDhcpInfo.asp|POST">DHCP list</button>' +
+    '<button class="b soft sm2" data-q="/html/bbsp/macfilter/macfilter.asp|GET">MAC filter page</button>' +
+    '<button class="b soft sm2" data-q="/html/amp/wlanbasic/WlanBasic.asp|GET">Wi-Fi page</button></div>' +
+    '<pre id="out">—</pre></div>' +
+    '<div class="card pad"><h2>App</h2><div class="sm">UI source: ' + esc(pref('uiBase', 'GitHub (default)')) + '</div>' +
+    '<div style="margin-top:12px"><button class="b ghost" id="rst">Reset UI to built-in</button></div></div>';
+  $('#save').onclick = () => {
+    setPref('host', $('#host').value.trim()); setPref('user', $('#user').value.trim()); setPref('pass', $('#pass').value);
+    loggedIn = false; toast('Saved');
+  };
+  const run = async () => {
+    $('#out').textContent = '…';
+    try {
+      const r = await api($('#rm').value, $('#rp').value, $('#rm').value === 'POST' ? FORM : {}, $('#rb').value);
+      $('#out').textContent = 'HTTP ' + r.status + '\n\n' + r.body.slice(0, 60000);
+    } catch (e) { $('#out').textContent = String(e.message || e); }
+  };
+  $('#rs').onclick = run;
+  $('#rc').onclick = () => { const t = $('#out').textContent; if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => toast('Copied')); };
+  document.querySelectorAll('button[data-q]').forEach((b) => b.onclick = () => {
+    const [p, m] = b.dataset.q.split('|'); $('#rp').value = p; $('#rm').value = m; run();
+  });
+  $('#rst').onclick = () => ONT.resetUi();
+};
+
+go('devices');

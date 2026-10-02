@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HG8347R</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="banner" hidden>UI updated · <button id="reload">Reload</button></div>
+
+<header>
+  <div>
+    <h1 id="title">Devices</h1>
+    <div id="sub" class="muted"></div>
+  </div>
+  <button id="refresh" class="icon" aria-label="Refresh">⟳</button>
+</header>
+
+<main id="view"></main>
+
+<nav id="tabs">
+  <button data-t="devices" class="on"><i>▤</i>Devices</button>
+  <button data-t="wifi"><i>◉</i>Wi-Fi</button>
+  <button data-t="block"><i>⊘</i>Blocking</button>
+  <button data-t="tools"><i>⚙</i>Tools</button>
+</nav>
+
+<div id="sheet" hidden>
+  <div class="scrim"></div>
+  <div class="panel" id="panel"></div>
+</div>
+
+<div id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
