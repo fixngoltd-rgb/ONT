@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '11';
+const UI_VER = '12';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -71,11 +71,24 @@ async function api(method, path, headers, body) {
   return r;
 }
 async function token() { return clean((await api('POST', '/asp/GetRandCount.asp')).body); }
+let lastWrite = null;
+const plain = (h) => String(h || '').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 async function postForm(path, fields) {
   const p = new URLSearchParams();
   Object.keys(fields).forEach((k) => p.append(k, fields[k]));
-  p.append('x.X_HW_Token', await token());
-  return api('POST', path, FORM, p.toString());
+  const tok = await token();
+  p.append('x.X_HW_Token', tok);
+  // The old portal sends the page it came from as Referer; do the same.
+  const rf = /[?&]RequestFile=([^&]+)/.exec(path);
+  const hdrs = Object.assign({}, FORM);
+  if (rf) hdrs.Referer = 'http://' + pref('host', '192.168.100.1') + '/' + rf[1];
+  const body = p.toString();
+  const r = await api('POST', path, hdrs, body);
+  lastWrite = {
+    url: path.replace(/^.*\//, ''), body: body.replace(tok, '<token>'),
+    status: r.status, loc: r.location || '', hdrs: (r.headers || '').slice(0, 300), reply: plain(r.body).slice(0, 500) || '(empty reply)',
+  };
+  return r;
 }
 
 /* ------------------------------------------------------------ parsing */
@@ -311,7 +324,6 @@ function filterState(body) {
   return { on: e ? e[1] === '1' : null, mode: m ? m[1] : null };
 }
 const stateText = (st) => st.on === null ? 'unknown' : (st.on ? 'ON' : 'OFF') + (st.mode === '0' ? ' · blocklist' : st.mode === '1' ? ' · allowlist' : '');
-let lastReply = '';
 const FURL = MF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&RequestFile=html/bbsp/macfilter/macfilter.asp';
 
 views.block = async function () {
@@ -332,13 +344,12 @@ views.block = async function () {
     '<div class="card"><h2 style="padding-top:12px">In the list</h2>' +
     (list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + esc(x.mac) + '</div></div>' +
       '<button class="b ghost sm2" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Empty</div>') + '</div>' +
-    (lastReply ? '<div class="card pad"><h2>Router reply to the last switch</h2><pre>' + esc(lastReply) + '</pre></div>' : '') +
+    (lastWrite ? '<div class="card pad"><h2>Last change sent</h2><pre>' + esc('HTTP ' + lastWrite.status + (lastWrite.loc ? ' → ' + lastWrite.loc : '') + '\n' + lastWrite.url + '\n' + lastWrite.body + '\nreply: ' + lastWrite.reply + '\nheaders: ' + lastWrite.hdrs) + '</pre></div>' : '') +
     '<div class="card pad"><h2>Debug: what the router says</h2><pre>' + esc(dbg || '(nothing matched)') + '</pre></div>';
   document.querySelectorAll('button[data-p]').forEach((b) => b.onclick = async () => {
     try {
       const r = await postForm(FURL, { 'x.MacFilterPolicy': b.dataset.p, 'x.MacFilterRight': b.dataset.r });
       await new Promise((ok) => setTimeout(ok, 1500));
-      lastReply = (r.body || '').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400) || '(empty reply)';
       const after = filterState((await api('GET', MF + 'macfilter.asp')).body);
       const want = b.dataset.r === '1';
       toast(after.on === want ? 'Confirmed: filter is now ' + stateText(after) : 'Router replied HTTP ' + r.status + ' but the filter is still ' + stateText(after), 6000);
@@ -348,7 +359,13 @@ views.block = async function () {
   $('#add').onclick = async () => {
     const mac = $('#mac').value.trim();
     if (!MAC_RE.test(mac)) return toast('That is not a valid MAC address');
-    try { await blockMac(mac); toast('Added'); go('block'); } catch (e) { toast(e.message); }
+    try {
+      await blockMac(mac);
+      await new Promise((ok) => setTimeout(ok, 1500));
+      const now = await loadBlocked();
+      toast(now.some((x) => x.mac === mac.toLowerCase()) ? 'Added: the router now lists it' : 'Sent, but the router did not add it', 5000);
+      go('block');
+    } catch (e) { toast(e.message); }
   };
   document.querySelectorAll('button[data-u]').forEach((b) => b.onclick = async () => {
     if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Sure?'; return; }
