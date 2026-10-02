@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '12';
+const UI_VER = '13';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -60,7 +60,7 @@ async function login() {
       : 'Login failed: HTTP ' + r.status + (r.location ? ' → ' + r.location : '') + '. Router said: ' + snip + ' || headers: ' + (r.headers || '').slice(0, 400) + ' || ui v' + UI_VER);
   }
 }
-const looksLoggedOut = (r) => [301, 302, 401, 403].includes(r.status) || /name=["']?UserName/i.test(r.body || '');
+const looksLoggedOut = (r) => [301, 302, 401, 403].includes(r.status) || /name=["']?UserName/i.test(r.body || '') || /<title>\s*Waiting\.\.\./i.test(r.body || '') || /top\.location\.replace\(\s*pageName/.test(r.body || '');
 
 async function api(method, path, headers, body) {
   if (!loggedIn) await login();
@@ -344,7 +344,7 @@ views.block = async function () {
     '<div class="card"><h2 style="padding-top:12px">In the list</h2>' +
     (list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + esc(x.mac) + '</div></div>' +
       '<button class="b ghost sm2" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Empty</div>') + '</div>' +
-    (lastWrite ? '<div class="card pad"><h2>Last change sent</h2><pre>' + esc('HTTP ' + lastWrite.status + (lastWrite.loc ? ' → ' + lastWrite.loc : '') + '\n' + lastWrite.url + '\n' + lastWrite.body + '\nreply: ' + lastWrite.reply + '\nheaders: ' + lastWrite.hdrs) + '</pre></div>' : '') +
+    (lastWrite ? '<div class="card pad"><h2>Last change sent</h2><pre>' + esc('HTTP ' + lastWrite.status + (lastWrite.loc ? ' → ' + lastWrite.loc : '') + '\n' + lastWrite.url + '\n' + lastWrite.body + '\nreply: ' + lastWrite.reply + '\nheaders: ' + lastWrite.hdrs) + '</pre><button class="b soft sm2" id="cpw">Copy this</button></div>' : '') +
     '<div class="card pad"><h2>Debug: what the router says</h2><pre>' + esc(dbg || '(nothing matched)') + '</pre></div>';
   document.querySelectorAll('button[data-p]').forEach((b) => b.onclick = async () => {
     try {
@@ -356,6 +356,8 @@ views.block = async function () {
       go('block');
     } catch (e) { toast(e.message); }
   });
+  const cpw = $('#cpw');
+  if (cpw) cpw.onclick = () => { const t = 'HTTP ' + lastWrite.status + '\n' + lastWrite.url + '\n' + lastWrite.body + '\nreply: ' + lastWrite.reply + '\nheaders: ' + lastWrite.hdrs; if (window.ONT && ONT.copy) ONT.copy(t); toast('Copied'); };
   $('#add').onclick = async () => {
     const mac = $('#mac').value.trim();
     if (!MAC_RE.test(mac)) return toast('That is not a valid MAC address');
