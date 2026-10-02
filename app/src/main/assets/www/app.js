@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '13';
+const UI_VER = '14';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -329,7 +329,7 @@ const FURL = MF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&RequestFile=htm
 views.block = async function () {
   const list = await loadBlocked();
   const page = await api('GET', MF + 'macfilter.asp');
-  const dbg = (page.body || '').split(/\r?\n/).filter((l) => /MacFilter|Right|Policy|Enable|[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}/i.test(l)).map((l) => l.trim().slice(0, 220)).slice(0, 40).join('\n');
+  const dbg = (page.body || '').split(/\r?\n/).filter((l) => /MacFilter|Right|Policy|Enable|[Tt]oken|[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}/i.test(l)).map((l) => l.trim().slice(0, 220)).slice(0, 40).join('\n');
   $('#sub').textContent = list.length + ' in the filter list';
   const st0 = filterState(page.body);
   $('#view').innerHTML =
@@ -339,6 +339,7 @@ views.block = async function () {
     '<button class="b soft sm2" data-p="1" data-r="1">On · allowlist</button>' +
     '<button class="b ghost sm2" data-p="0" data-r="0">Off</button></div>' +
     '<div class="sm" style="margin-top:10px">Blocklist: listed devices are blocked. Allowlist: only listed devices get internet, so be careful. The filter must be On for any blocking to work.</div></div>' +
+    '<div class="card pad"><h2>Diagnose</h2><div class="sm">Tries the filter switch several different ways and tells which one the router accepts.</div><div style="margin-top:10px"><button class="b soft sm2" id="diag">Run diagnose</button></div><pre id="diagout" hidden></pre><button class="b soft sm2" id="diagcp" hidden>Copy result</button></div>' +
     '<div class="card pad"><h2>Add a MAC address</h2><input id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off">' +
     '<div style="margin-top:12px"><button class="b" id="add" style="width:100%">Add to list</button></div></div>' +
     '<div class="card"><h2 style="padding-top:12px">In the list</h2>' +
@@ -356,6 +357,38 @@ views.block = async function () {
       go('block');
     } catch (e) { toast(e.message); }
   });
+  $('#diag').onclick = async () => {
+    const out = $('#diagout'); out.hidden = false; out.textContent = 'Running…';
+    const BR = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36', Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Upgrade-Insecure-Requests': '1' };
+    const host = 'http://' + pref('host', '192.168.100.1');
+    const pageTok = (t) => { const m = /name=["']?onttoken["']?[^>]*value=["']?([0-9a-f]{20,})/i.exec(t) || /value=["']?([0-9a-f]{32})["']?[^>]*name=["']?onttoken/i.exec(t) || /id=["']?hwonttoken["']?[^>]*value=["']?([0-9a-f]{20,})/i.exec(t); return m ? m[1] : ''; };
+    const BH = () => Object.assign({}, BR, FORM, { Referer: host + '/html/bbsp/macfilter/macfilter.asp', Origin: host });
+    const B = (tok) => 'x.MacFilterRight=1&x.MacFilterPolicy=0&x.X_HW_Token=' + tok;
+    const variants = [
+      ['plain', () => postForm(FURL, { 'x.MacFilterPolicy': '0', 'x.MacFilterRight': '1' })],
+      ['browser headers after page load', async () => { await api('GET', MF + 'macfilter.asp', BR); return api('POST', FURL, BH(), B(await token())); }],
+      ['token from page', async () => {
+        const pg = await api('GET', MF + 'macfilter.asp', BR); const tok = pageTok(pg.body || '');
+        if (!tok) return { status: 'no onttoken in page', body: '' };
+        return api('POST', FURL, BH(), B(tok));
+      }],
+      ['token fetched twice, 2nd used', async () => { await token(); return api('POST', FURL, BH(), B(await token())); }],
+      ['fresh login first', async () => { await login(); await api('GET', MF + 'macfilter.asp', BR); return api('POST', FURL, BH(), B(await token())); }],
+    ];
+    let rep = ''; let won = '';
+    for (const [name, fn] of variants) {
+      try {
+        const r = await fn();
+        await new Promise((ok) => setTimeout(ok, 1500));
+        const st = filterState((await api('GET', MF + 'macfilter.asp')).body);
+        rep += name + ': HTTP ' + r.status + ', reply "' + plain(r.body).slice(0, 80) + '", filter now ' + stateText(st) + '\n';
+        if (st.on) { won = name; break; }
+      } catch (e) { rep += name + ': error ' + e.message + '\n'; }
+      out.textContent = rep + '…';
+    }
+    rep += won ? '\nWORKED: ' + won : '\nNone of them turned it on.';
+    out.textContent = rep; const cp = $('#diagcp'); cp.hidden = false; cp.onclick = () => { if (window.ONT && ONT.copy) ONT.copy(rep); toast('Copied'); };
+  };
   const cpw = $('#cpw');
   if (cpw) cpw.onclick = () => { const t = 'HTTP ' + lastWrite.status + '\n' + lastWrite.url + '\n' + lastWrite.body + '\nreply: ' + lastWrite.reply + '\nheaders: ' + lastWrite.hdrs; if (window.ONT && ONT.copy) ONT.copy(t); toast('Copied'); };
   $('#add').onclick = async () => {
