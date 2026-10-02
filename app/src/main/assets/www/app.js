@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '6';
+const UI_VER = '7';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -244,7 +244,7 @@ function deviceSheet(d, isBlocked, dn) {
     act.disabled = true;
     try {
       if (blocked) await unblockMac(d.mac); else await blockMac(d.mac);
-      closeSheet(); toast(blocked ? 'Unblock sent' : 'Block sent'); go('devices');
+      closeSheet(); toast(blocked ? 'Unblocked' : 'Added to the list. Blocking only works while the filter is On (Blocking tab).', 4500); go('devices');
     } catch (e) { toast(e.message); act.disabled = false; }
   };
 }
@@ -294,12 +294,13 @@ async function blockMac(mac) {
     { 'x.SourceMACAddress': mac });
 }
 async function unblockMac(mac) {
-  // Delete request was not captured yet: this follows the standard Huawei pattern. Verify with Raw if it fails.
+  // Request copied from the router's own Delete button (captured in the old portal).
   const list = await loadBlocked();
   const e = list.find((x) => x.mac === mac.toLowerCase());
-  if (!e || !e.domain) throw new Error('Could not find that entry on the filter page');
-  return postForm(MF + 'del.cgi?x=' + encodeURIComponent(e.domain).replace(/%2E/g, '.') +
-    '&RequestFile=html/bbsp/macfilter/macfilter.asp', {});
+  if (!e || !e.domain) throw new Error('That MAC is not in the router\'s filter list');
+  const f = {};
+  f[e.domain] = '';
+  return postForm(MF + 'del.cgi?x=InternetGatewayDevice.X_HW_Security.MacFilter&RequestFile=html/bbsp/macfilter/macfilter.asp', f);
 }
 const FURL = MF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&RequestFile=html/bbsp/macfilter/macfilter.asp';
 
@@ -308,10 +309,10 @@ views.block = async function () {
   $('#sub').textContent = list.length + ' in the filter list';
   $('#view').innerHTML =
     '<div class="card pad"><h2>Filter switch</h2><div class="seg" style="margin-top:8px">' +
-    '<button class="b soft sm2" data-p="0" data-r="1">On · mode 0</button>' +
-    '<button class="b soft sm2" data-p="1" data-r="1">On · mode 1</button>' +
+    '<button class="b soft sm2" data-p="0" data-r="1">On · blocklist</button>' +
+    '<button class="b soft sm2" data-p="1" data-r="1">On · allowlist</button>' +
     '<button class="b ghost sm2" data-p="0" data-r="0">Off</button></div>' +
-    '<div class="sm" style="margin-top:10px">Which mode is blocklist and which is allowlist is still unconfirmed. Test with a spare device.</div></div>' +
+    '<div class="sm" style="margin-top:10px">Blocklist: listed devices are blocked. Allowlist: only listed devices get internet, so be careful. The filter must be On for any blocking to work.</div></div>' +
     '<div class="card pad"><h2>Add a MAC address</h2><input id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off">' +
     '<div style="margin-top:12px"><button class="b" id="add" style="width:100%">Add to list</button></div></div>' +
     '<div class="card"><h2 style="padding-top:12px">In the list</h2>' +
