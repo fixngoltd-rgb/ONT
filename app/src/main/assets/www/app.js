@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '9';
+const UI_VER = '10';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -305,6 +305,12 @@ async function unblockMac(mac) {
   f[e.domain] = '';
   return postForm(MF + 'del.cgi?x=InternetGatewayDevice.X_HW_Security.MacFilter&RequestFile=html/bbsp/macfilter/macfilter.asp', f);
 }
+function filterState(body) {
+  const e = /var\s+enableFilter\s*=\s*['"](\d*)['"]/.exec(body || '');
+  const m = /var\s+Mode\s*=\s*['"](\d*)['"]/.exec(body || '');
+  return { on: e ? e[1] === '1' : null, mode: m ? m[1] : null };
+}
+const stateText = (st) => st.on === null ? 'unknown' : (st.on ? 'ON' : 'OFF') + (st.mode === '0' ? ' · blocklist' : st.mode === '1' ? ' · allowlist' : '');
 const FURL = MF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&RequestFile=html/bbsp/macfilter/macfilter.asp';
 
 views.block = async function () {
@@ -312,7 +318,9 @@ views.block = async function () {
   const page = await api('GET', MF + 'macfilter.asp');
   const dbg = (page.body || '').split(/\r?\n/).filter((l) => /MacFilter|Right|Policy|Enable|[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}/i.test(l)).map((l) => l.trim().slice(0, 220)).slice(0, 40).join('\n');
   $('#sub').textContent = list.length + ' in the filter list';
+  const st0 = filterState(page.body);
   $('#view').innerHTML =
+    '<div class="card pad" style="border-left:5px solid ' + (st0.on ? 'var(--ok)' : 'var(--bad)') + '"><h2>Router says</h2><div class="name" id="fstate" style="font-size:20px">Filter is ' + esc(stateText(st0)) + '</div></div>' +
     '<div class="card pad"><h2>Filter switch</h2><div class="seg" style="margin-top:8px">' +
     '<button class="b soft sm2" data-p="0" data-r="1">On · blocklist</button>' +
     '<button class="b soft sm2" data-p="1" data-r="1">On · allowlist</button>' +
@@ -327,8 +335,11 @@ views.block = async function () {
   document.querySelectorAll('button[data-p]').forEach((b) => b.onclick = async () => {
     try {
       const r = await postForm(FURL, { 'x.MacFilterPolicy': b.dataset.p, 'x.MacFilterRight': b.dataset.r });
-      toast('Router replied HTTP ' + r.status + (r.location ? ' → ' + r.location : ''), 4000);
-      setTimeout(() => go('block'), 1200);
+      await new Promise((ok) => setTimeout(ok, 1500));
+      const after = filterState((await api('GET', MF + 'macfilter.asp')).body);
+      const want = b.dataset.r === '1';
+      toast(after.on === want ? 'Confirmed: filter is now ' + stateText(after) : 'Router replied HTTP ' + r.status + ' but the filter is still ' + stateText(after), 6000);
+      go('block');
     } catch (e) { toast(e.message); }
   });
   $('#add').onclick = async () => {
