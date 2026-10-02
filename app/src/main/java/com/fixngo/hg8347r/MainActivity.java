@@ -44,7 +44,7 @@ public class MainActivity extends Activity {
     private static final String UA =
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36";
     private static final String DEFAULT_UI_BASE =
-            "https://raw.githubusercontent.com/fixngoltd-rgb/HG8347R/main/app/src/main/assets/www/";
+            "https://raw.githubusercontent.com/fixngoltd-rgb/ont/main/app/src/main/assets/www/";
     private static final String[] UI_FILES = {"index.html", "style.css", "app.js"};
 
     private WebView web;
