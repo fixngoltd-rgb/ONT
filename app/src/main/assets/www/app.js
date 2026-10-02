@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '10';
+const UI_VER = '11';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -311,6 +311,7 @@ function filterState(body) {
   return { on: e ? e[1] === '1' : null, mode: m ? m[1] : null };
 }
 const stateText = (st) => st.on === null ? 'unknown' : (st.on ? 'ON' : 'OFF') + (st.mode === '0' ? ' · blocklist' : st.mode === '1' ? ' · allowlist' : '');
+let lastReply = '';
 const FURL = MF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&RequestFile=html/bbsp/macfilter/macfilter.asp';
 
 views.block = async function () {
@@ -331,11 +332,13 @@ views.block = async function () {
     '<div class="card"><h2 style="padding-top:12px">In the list</h2>' +
     (list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + esc(x.mac) + '</div></div>' +
       '<button class="b ghost sm2" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Empty</div>') + '</div>' +
+    (lastReply ? '<div class="card pad"><h2>Router reply to the last switch</h2><pre>' + esc(lastReply) + '</pre></div>' : '') +
     '<div class="card pad"><h2>Debug: what the router says</h2><pre>' + esc(dbg || '(nothing matched)') + '</pre></div>';
   document.querySelectorAll('button[data-p]').forEach((b) => b.onclick = async () => {
     try {
       const r = await postForm(FURL, { 'x.MacFilterPolicy': b.dataset.p, 'x.MacFilterRight': b.dataset.r });
       await new Promise((ok) => setTimeout(ok, 1500));
+      lastReply = (r.body || '').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 400) || '(empty reply)';
       const after = filterState((await api('GET', MF + 'macfilter.asp')).body);
       const want = b.dataset.r === '1';
       toast(after.on === want ? 'Confirmed: filter is now ' + stateText(after) : 'Router replied HTTP ' + r.status + ' but the filter is still ' + stateText(after), 6000);
