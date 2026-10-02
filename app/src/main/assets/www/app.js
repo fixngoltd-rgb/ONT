@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '4';
+const UI_VER = '5';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -175,33 +175,55 @@ const initials = (d) => ((d.name || d.ip || '?').replace(/[^a-z0-9]/gi, '').slic
 /* ------------------------------------------------------------ views */
 const views = {};
 
+let devQuery = '';
+const getNicks = () => { try { return JSON.parse(pref('nicks', '{}')); } catch (e) { return {}; } };
+const ipNum = (ip) => (ip || '').split('.').reduce((a, x) => a * 256 + (+x || 0), 0);
+
 views.devices = async function () {
   const [list, blocked] = await Promise.all([loadDevices(), loadBlocked().catch(() => [])]);
+  const nicks = getNicks();
   const isBlocked = (m) => m && blocked.some((b) => b.mac === m.toLowerCase());
+  const dn = (d) => (d.mac && nicks[d.mac.toLowerCase()]) || d.name || d.ip || d.mac || '?';
+  list.sort((x, y) => ipNum(x.ip) - ipNum(y.ip));
   $('#sub').textContent = list.length + ' seen by the router';
-  if (!list.length) { $('#view').innerHTML = '<div class="empty">No devices parsed.<br>Open Tools → Raw to see what the router sent.</div>'; return; }
-  $('#view').innerHTML = '<div class="card">' + list.map((d, i) =>
-    '<div class="row" data-i="' + i + '"><div class="av">' + esc(initials(d)) + '</div><div class="grow">' +
-    '<div class="name">' + esc(d.name || d.ip || d.mac) + '</div>' +
-    '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
-    (isBlocked(d.mac) ? '<span class="chip blocked">blocked</span>' : '') +
-    d.other.filter((x) => x !== d.name).slice(0, 4).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') +
-    '</div><span class="sm">›</span></div>').join('') + '</div>';
-  document.querySelectorAll('#view .row').forEach((row) => {
-    row.onclick = () => deviceSheet(list[+row.dataset.i], isBlocked);
-  });
+  $('#view').innerHTML = '<input id="q" placeholder="Search name, IP or MAC" autocapitalize="off" value="' + esc(devQuery) + '" style="margin-bottom:12px"><div id="devs"></div>';
+  const draw = () => {
+    const q = devQuery.trim().toLowerCase();
+    const shown = list.filter((d) => !q || [dn(d), d.ip, d.mac].some((x) => (x || '').toLowerCase().includes(q)));
+    $('#devs').innerHTML = shown.length ? '<div class="card">' + shown.map((d) =>
+      '<div class="row" data-i="' + list.indexOf(d) + '"><div class="av">' + esc(((dn(d)).replace(/[^a-z0-9]/gi, '').slice(0, 2) || '?').toUpperCase()) + '</div><div class="grow">' +
+      '<div class="name">' + esc(dn(d)) + '</div>' +
+      '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
+      (isBlocked(d.mac) ? '<span class="chip blocked">blocked</span>' : '') +
+      d.other.filter((x) => x !== d.name).slice(0, 3).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') +
+      '</div><span class="sm">›</span></div>').join('') + '</div>'
+      : '<div class="empty">' + (list.length ? 'No match' : 'No devices parsed.<br>Open Tools → Raw to see what the router sent.') + '</div>';
+    document.querySelectorAll('#devs .row').forEach((row) => {
+      row.onclick = () => deviceSheet(list[+row.dataset.i], isBlocked, dn);
+    });
+  };
+  $('#q').oninput = (e) => { devQuery = e.target.value; draw(); };
+  draw();
 };
 
-function deviceSheet(d, isBlocked) {
+function deviceSheet(d, isBlocked, dn) {
   const blocked = isBlocked(d.mac);
-  sheet('<h2 style="margin:0 0 4px;font-size:22px">' + esc(d.name || d.ip || d.mac) + '</h2>' +
+  sheet('<h2 style="margin:0 0 4px;font-size:22px">' + esc(dn(d)) + '</h2>' +
     '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
     '<div style="margin:12px 0">' + d.other.map((x) => '<span class="chip">' + esc(x) + '</span>').join('') + '</div>' +
+    (d.mac ? '<label>Nickname (kept on this phone)</label><div class="seg" style="flex-wrap:nowrap"><input id="nick" value="' + esc(getNicks()[d.mac.toLowerCase()] || '') + '" placeholder="e.g. Ali\'s iPhone"><button class="b soft" id="nsave">Save</button></div>' : '') +
+    '<div style="height:14px"></div>' +
     (d.mac ? (blocked
       ? '<button class="b soft" id="act" style="width:100%">Unblock this device</button>'
       : '<button class="b bad" id="act" style="width:100%">Block this device</button>') : '') +
     '<button class="b ghost" id="x" style="width:100%;margin-top:10px">Close</button>');
   $('#x').onclick = closeSheet;
+  const ns = $('#nsave');
+  if (ns) ns.onclick = () => {
+    const n = getNicks(); const v = $('#nick').value.trim();
+    if (v) n[d.mac.toLowerCase()] = v; else delete n[d.mac.toLowerCase()];
+    setPref('nicks', JSON.stringify(n)); closeSheet(); toast('Saved'); go('devices');
+  };
   const act = $('#act');
   if (act) act.onclick = async () => {
     if (act.dataset.c !== '1') { act.dataset.c = '1'; act.textContent = 'Tap again to confirm'; return; }
@@ -297,7 +319,11 @@ views.block = async function () {
 };
 
 views.tools = async function () {
+  const canCapture = window.ONT && typeof ONT.openCapture === 'function';
   $('#view').innerHTML =
+    '<div class="card pad"><h2>Record from the old portal</h2>' +
+    '<div class="sm">Opens the router\'s original pages inside this app and logs what each button sends, so I can build it here. Passwords and keys are hidden in the log.</div>' +
+    '<div style="margin-top:12px"><button class="b" id="cap">' + (canCapture ? 'Open the old portal' : 'Needs the latest app install') + '</button></div></div>' +
     '<div class="card pad"><h2>Router</h2>' +
     '<label>Address</label><input id="host" value="' + esc(pref('host', '192.168.100.1')) + '" autocapitalize="off">' +
     '<label>Username</label><input id="user" value="' + esc(pref('user', 'root')) + '" autocapitalize="off">' +
@@ -315,6 +341,7 @@ views.tools = async function () {
     '<pre id="out">—</pre></div>' +
     '<div class="card pad"><h2>App</h2><div class="sm">UI version ' + UI_VER + '</div><div class="sm">UI source: ' + esc(pref('uiBase', 'GitHub (default)')) + '</div>' +
     '<div style="margin-top:12px"><button class="b ghost" id="rst">Reset UI to built-in</button></div></div>';
+  $('#cap').onclick = () => { if (canCapture) ONT.openCapture(); else toast('Install the latest HG8347R.apk first'); };
   $('#save').onclick = () => {
     setPref('host', $('#host').value.trim()); setPref('user', $('#user').value.trim()); setPref('pass', $('#pass').value);
     loggedIn = false; toast('Saved');
@@ -327,7 +354,7 @@ views.tools = async function () {
     } catch (e) { $('#out').textContent = String(e.message || e); }
   };
   $('#rs').onclick = run;
-  $('#rc').onclick = () => { const t = $('#out').textContent; if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => toast('Copied')); };
+  $('#rc').onclick = () => { const t = $('#out').textContent; if (window.ONT && ONT.copy) { ONT.copy(t); toast('Copied'); } else if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => toast('Copied')); };
   document.querySelectorAll('button[data-q]').forEach((b) => b.onclick = () => {
     const [p, m] = b.dataset.q.split('|'); $('#rp').value = p; $('#rm').value = m; run();
   });

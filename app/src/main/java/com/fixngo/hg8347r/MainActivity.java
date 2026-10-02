@@ -1,7 +1,10 @@
 package com.fixngo.hg8347r;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -268,5 +271,21 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void exit() { runOnUiThread(() -> finish()); }
+
+        @JavascriptInterface
+        public void openCapture() {
+            runOnUiThread(() -> startActivity(new Intent(MainActivity.this, CaptureActivity.class)));
+        }
+
+        @JavascriptInterface
+        public void copy(final String text) {
+            runOnUiThread(() -> {
+                ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                cb.setPrimaryClip(ClipData.newPlainText("HG8347R", text));
+            });
+        }
+
+        @JavascriptInterface
+        public int nativeVersion() { return 5; }
     }
 }
