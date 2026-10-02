@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '8';
+const UI_VER = '9';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -166,8 +166,11 @@ function sheet(html) { $('#panel').innerHTML = html; $('#sheet').hidden = false;
 function closeSheet() { $('#sheet').hidden = true; }
 $('#sheet .scrim').onclick = closeSheet;
 window.onBack = () => { if (!$('#sheet').hidden) closeSheet(); else if (current !== 'devices') go('devices'); else ONT.exit(); };
-window.onUiUpdated = () => { $('#banner').hidden = false; };
-$('#reload').onclick = () => location.reload();
+const showBannerIfPending = () => { try { if (window.ONT && ONT.getPref('uiPending', '0') === '1') $('#banner').hidden = false; } catch (e) {} };
+window.onUiUpdated = showBannerIfPending;
+window.onUiStatus = () => { showBannerIfPending(); const el = $('#uistat'); if (el) el.textContent = ONT.getPref('uiStatus', 'not checked yet'); };
+setInterval(showBannerIfPending, 2000);
+$('#reload').onclick = () => { try { ONT.ackUi(); } catch (e) {} location.reload(); };
 $('#refresh').onclick = () => go(current);
 document.querySelectorAll('#tabs button').forEach((b) => { b.onclick = () => go(b.dataset.t); });
 
@@ -360,7 +363,8 @@ views.tools = async function () {
     '<button class="b soft sm2" data-q="/html/bbsp/macfilter/macfilter.asp|GET">MAC filter page</button>' +
     '<button class="b soft sm2" data-q="/html/amp/wlanbasic/WlanBasic.asp|GET">Wi-Fi page</button></div>' +
     '<pre id="out">—</pre></div>' +
-    '<div class="card pad"><h2>App</h2><div class="sm">UI version ' + UI_VER + '</div><div class="sm">UI source: ' + esc(pref('uiBase', 'GitHub (default)')) + '</div>' +
+    '<div class="card pad"><h2>App</h2><div class="sm">UI version ' + UI_VER + '</div><div class="sm">Update check: <span id="uistat">' + esc(pref('uiStatus', 'not checked yet')) + '</span></div>' +
+    '<div style="margin:10px 0"><button class="b soft sm2" id="chk">Check for update now</button></div><div class="sm">UI source: ' + esc(pref('uiBase', 'GitHub (default)')) + '</div>' +
     '<div style="margin-top:12px"><button class="b ghost" id="rst">Reset UI to built-in</button></div></div>';
   $('#cap').onclick = () => { if (canCapture) ONT.openCapture(); else toast('Install the latest HG8347R.apk first'); };
   $('#save').onclick = () => {
@@ -380,6 +384,7 @@ views.tools = async function () {
     const [p, m] = b.dataset.q.split('|'); $('#rp').value = p; $('#rm').value = m; run();
   });
   $('#rst').onclick = () => ONT.resetUi();
+  $('#chk').onclick = () => { if (ONT.checkUiNow) { $('#uistat').textContent = 'checking…'; ONT.checkUiNow(); } else toast('Needs the latest app install'); };
 };
 
 go('devices');

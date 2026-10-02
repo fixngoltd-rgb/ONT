@@ -55,6 +55,8 @@ public class MainActivity extends Activity {
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final Map<String, String> jar = new LinkedHashMap<>();
     private boolean triedAssetFallback = false;
+    private volatile long lastUiCheck = 0;
+    private volatile boolean uiChecking = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -81,7 +83,23 @@ public class MainActivity extends Activity {
         });
 
         loadUi();
-        pool.execute(this::updateUiFromRemote);
+        checkUi(true);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        checkUi(false);
+    }
+
+    private void checkUi(boolean force) {
+        if (uiChecking) return;
+        if (!force && System.currentTimeMillis() - lastUiCheck < 15000) return;
+        uiChecking = true;
+        pool.execute(() -> {
+            try { updateUiFromRemote(); } finally { lastUiCheck = System.currentTimeMillis(); uiChecking = false; }
+            runOnUiThread(() -> web.evaluateJavascript("window.onUiStatus && window.onUiStatus()", null));
+        });
     }
 
     @Override
@@ -98,30 +116,53 @@ public class MainActivity extends Activity {
 
     // ---------------------------------------------------------------- remote UI refresh
 
+    private void setUiStatus(String msg) {
+        String t = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(new java.util.Date());
+        prefs.edit().putString("uiStatus", t + " " + msg).apply();
+    }
+
+    /** Prefer a network that really has internet, even when the default one is the router's Wi-Fi without internet. */
+    private HttpURLConnection openInternet(URL url) throws Exception {
+        ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm != null) {
+            for (Network n : cm.getAllNetworks()) {
+                NetworkCapabilities c = cm.getNetworkCapabilities(n);
+                if (c != null && c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        && c.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                    return (HttpURLConnection) n.openConnection(url);
+                }
+            }
+        }
+        return (HttpURLConnection) url.openConnection();
+    }
+
     private void updateUiFromRemote() {
         try {
             String base = prefs.getString("uiBase", DEFAULT_UI_BASE);
-            if (base == null || base.isEmpty()) return;
+            if (base == null || base.isEmpty()) { setUiStatus("off"); return; }
             File tmp = new File(getFilesDir(), "www_tmp");
             deleteRecursive(tmp);
             tmp.mkdirs();
             for (String name : UI_FILES) {
-                HttpURLConnection c = (HttpURLConnection) new URL(base + name + "?t=" + System.currentTimeMillis()).openConnection();
-                c.setConnectTimeout(5000);
-                c.setReadTimeout(8000);
-                if (c.getResponseCode() != 200) { deleteRecursive(tmp); return; }
+                HttpURLConnection c = openInternet(new URL(base + name + "?t=" + System.currentTimeMillis()));
+                c.setConnectTimeout(6000);
+                c.setReadTimeout(10000);
+                c.setUseCaches(false);
+                int code = c.getResponseCode();
+                if (code != 200) { deleteRecursive(tmp); setUiStatus("failed: " + name + " HTTP " + code); return; }
                 byte[] data = readAll(c.getInputStream());
-                if (data.length == 0) { deleteRecursive(tmp); return; }
+                if (data.length == 0) { deleteRecursive(tmp); setUiStatus("failed: " + name + " empty"); return; }
                 try (OutputStream o = new FileOutputStream(new File(tmp, name))) { o.write(data); }
             }
             File dst = new File(getFilesDir(), "www");
             String oldHash = hashDir(dst), newHash = hashDir(tmp);
-            if (newHash.equals(oldHash)) { deleteRecursive(tmp); return; }
+            if (newHash.equals(oldHash)) { deleteRecursive(tmp); setUiStatus("up to date"); return; }
             deleteRecursive(dst);
-            tmp.renameTo(dst);
-            runOnUiThread(() -> web.evaluateJavascript("window.onUiUpdated && window.onUiUpdated()", null));
-        } catch (Exception ignored) {
-            // No internet or repo not reachable: keep what we have.
+            if (!tmp.renameTo(dst)) { setUiStatus("failed: could not save"); return; }
+            prefs.edit().putString("uiPending", "1").apply();
+            setUiStatus("new version downloaded");
+        } catch (Exception e) {
+            setUiStatus("failed: " + e.getClass().getSimpleName() + " " + e.getMessage());
         }
     }
 
@@ -286,6 +327,12 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public int nativeVersion() { return 6; }
+        public int nativeVersion() { return 7; }
+
+        @JavascriptInterface
+        public void checkUiNow() { checkUi(true); }
+
+        @JavascriptInterface
+        public void ackUi() { prefs.edit().putString("uiPending", "0").apply(); }
     }
 }
