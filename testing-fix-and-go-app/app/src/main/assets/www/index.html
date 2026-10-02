@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Fix and Go Board</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<div id="login-screen">
+  <div class="login-logo">FIX AND GO<span> BOARD</span></div>
+  <div class="login-box">
+    <input id="login-email" type="email" placeholder="Email" autocomplete="username">
+    <input id="login-password" type="password" placeholder="Password" autocomplete="current-password">
+    <button id="login-btn" onclick="doLogin()">Sign In</button>
+    <div class="login-error" id="login-error"></div>
+  </div>
+</div>
+
+<div id="app">
+  <div id="top-header">
+    <div class="title">FIX AND GO<span> BOARD</span></div>
+    <div class="user-chip">
+      <span id="user-name"></span>
+      <button onclick="doLogout()">Sign Out</button>
+    </div>
+  </div>
+  <div id="search-bar">
+    <input id="search-input" type="text" placeholder="Search ref, address, tenant, tech...">
+  </div>
+  <div id="tab-bar"></div>
+  <div class="pull-indicator" id="pull-indicator">Refreshing...</div>
+  <div id="pager"></div>
+</div>
+
+<div id="detail-screen">
+  <div id="detail-header">
+    <button id="detail-back" onclick="closeDetail()">&larr;</button>
+    <div class="ht">
+      <div class="ref" id="d-ref"></div>
+      <div class="title" id="d-title"></div>
+    </div>
+  </div>
+  <div id="detail-tabs">
+    <button class="detail-tab-btn active" data-tab="info" onclick="switchDetailTab('info')">Info</button>
+    <button class="detail-tab-btn" data-tab="comments" onclick="switchDetailTab('comments')">Comments</button>
+  </div>
+  <div id="detail-body">
+    <div class="detail-panel active" id="panel-info"></div>
+    <div class="detail-panel" id="panel-comments">
+      <div id="comment-list"></div>
+    </div>
+  </div>
+  <div class="photo-preview" id="photo-preview" style="display:none;"></div>
+  <div id="comment-compose" style="display:none;">
+    <input type="file" id="camera-input" accept="image/*" capture="environment" style="display:none;" onchange="onPhotoChosen(event)">
+    <button class="icon-btn" onclick="document.getElementById('camera-input').click()">📷</button>
+    <textarea id="comment-input" placeholder="Write a comment..." rows="1"></textarea>
+    <button class="icon-btn send" onclick="postComment()">&#10148;</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
