@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '7';
+const UI_VER = '8';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -306,6 +306,8 @@ const FURL = MF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&RequestFile=htm
 
 views.block = async function () {
   const list = await loadBlocked();
+  const page = await api('GET', MF + 'macfilter.asp');
+  const dbg = (page.body || '').split(/\r?\n/).filter((l) => /MacFilter|Right|Policy|Enable|[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}/i.test(l)).map((l) => l.trim().slice(0, 220)).slice(0, 40).join('\n');
   $('#sub').textContent = list.length + ' in the filter list';
   $('#view').innerHTML =
     '<div class="card pad"><h2>Filter switch</h2><div class="seg" style="margin-top:8px">' +
@@ -317,10 +319,14 @@ views.block = async function () {
     '<div style="margin-top:12px"><button class="b" id="add" style="width:100%">Add to list</button></div></div>' +
     '<div class="card"><h2 style="padding-top:12px">In the list</h2>' +
     (list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + esc(x.mac) + '</div></div>' +
-      '<button class="b ghost sm2" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Empty</div>') + '</div>';
+      '<button class="b ghost sm2" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Empty</div>') + '</div>' +
+    '<div class="card pad"><h2>Debug: what the router says</h2><pre>' + esc(dbg || '(nothing matched)') + '</pre></div>';
   document.querySelectorAll('button[data-p]').forEach((b) => b.onclick = async () => {
-    try { await postForm(FURL, { 'x.MacFilterPolicy': b.dataset.p, 'x.MacFilterRight': b.dataset.r }); toast('Sent'); }
-    catch (e) { toast(e.message); }
+    try {
+      const r = await postForm(FURL, { 'x.MacFilterPolicy': b.dataset.p, 'x.MacFilterRight': b.dataset.r });
+      toast('Router replied HTTP ' + r.status + (r.location ? ' → ' + r.location : ''), 4000);
+      setTimeout(() => go('block'), 1200);
+    } catch (e) { toast(e.message); }
   });
   $('#add').onclick = async () => {
     const mac = $('#mac').value.trim();
