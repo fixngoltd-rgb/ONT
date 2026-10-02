@@ -208,14 +208,22 @@ public class MainActivity extends Activity {
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
             String text = in == null ? "" : new String(readAll(in), StandardCharsets.UTF_8);
             Map<String, List<String>> hf = c.getHeaderFields();
-            List<String> sc = hf == null ? null : hf.get("Set-Cookie");
-            if (sc != null) {
-                for (String line : sc) {
-                    String first = line.split(";", 2)[0];
-                    int eq = first.indexOf('=');
-                    if (eq > 0) { synchronized (jar) { jar.put(first.substring(0, eq).trim(), first.substring(eq + 1)); } }
+            StringBuilder hs = new StringBuilder();
+            if (hf != null) {
+                for (Map.Entry<String, List<String>> he : hf.entrySet()) {
+                    String hk = he.getKey();
+                    if (hk == null) continue;
+                    for (String line : he.getValue()) {
+                        hs.append(hk).append(": ").append(line).append(" | ");
+                        if (hk.equalsIgnoreCase("Set-Cookie")) {
+                            String first = line.split(";", 2)[0];
+                            int eq = first.indexOf('=');
+                            if (eq > 0) { synchronized (jar) { jar.put(first.substring(0, eq).trim(), first.substring(eq + 1)); } }
+                        }
+                    }
                 }
             }
+            out.put("headers", hs.toString());
             out.put("status", code);
             out.put("body", text);
             out.put("location", c.getHeaderField("Location"));

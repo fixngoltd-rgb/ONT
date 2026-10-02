@@ -1,4 +1,5 @@
 'use strict';
+const UI_VER = '4';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -42,6 +43,9 @@ async function login() {
   const r = await native('POST', '/login.cgi', Object.assign({}, FORM, { Cookie: 'Cookie=body:Language:chinese:id=-1' }), body);
   loggedIn = !!r.sid;
   if (!loggedIn && r.status !== 0) {
+    // Don't trust cookie detection alone: ask for a protected page and see if the router answers it.
+    const probe = await native('POST', '/html/bbsp/common/GetLanUserDevInfo.asp', {}, '');
+    if (probe.status === 200 && /new\s+\w+\s*\(/.test(probe.body || '') && !/UserName|Waiting/i.test(probe.body || '')) { loggedIn = true; return; }
     // Some firmware hands the session id to the page's script instead of a header. Read it from there.
     const txt = r.body || '';
     let m = txt.match(/Cookie\s*=\s*["']?(sid=[^"';\s<]+)/i);
@@ -53,7 +57,7 @@ async function login() {
     const snip = (r.body || '').replace(/\s+/g, ' ').slice(0, 500);
     throw new Error(r.status === 0
       ? 'Cannot reach the router at ' + pref('host', '192.168.100.1') + ' (' + (r.error || 'no reply') + ')'
-      : 'Login failed: HTTP ' + r.status + (r.location ? ' → ' + r.location : '') + '. Router said: ' + snip);
+      : 'Login failed: HTTP ' + r.status + (r.location ? ' → ' + r.location : '') + '. Router said: ' + snip + ' || headers: ' + (r.headers || '').slice(0, 400) + ' || ui v' + UI_VER);
   }
 }
 const looksLoggedOut = (r) => [301, 302, 401, 403].includes(r.status) || /name=["']?UserName/i.test(r.body || '');
@@ -309,7 +313,7 @@ views.tools = async function () {
     '<button class="b soft sm2" data-q="/html/bbsp/macfilter/macfilter.asp|GET">MAC filter page</button>' +
     '<button class="b soft sm2" data-q="/html/amp/wlanbasic/WlanBasic.asp|GET">Wi-Fi page</button></div>' +
     '<pre id="out">—</pre></div>' +
-    '<div class="card pad"><h2>App</h2><div class="sm">UI source: ' + esc(pref('uiBase', 'GitHub (default)')) + '</div>' +
+    '<div class="card pad"><h2>App</h2><div class="sm">UI version ' + UI_VER + '</div><div class="sm">UI source: ' + esc(pref('uiBase', 'GitHub (default)')) + '</div>' +
     '<div style="margin-top:12px"><button class="b ghost" id="rst">Reset UI to built-in</button></div></div>';
   $('#save').onclick = () => {
     setPref('host', $('#host').value.trim()); setPref('user', $('#user').value.trim()); setPref('pass', $('#pass').value);
