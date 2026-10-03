@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '15';
+const UI_VER = '16';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -264,8 +264,17 @@ function deviceSheet(d, isBlocked, dn) {
     if (act.dataset.c !== '1') { act.dataset.c = '1'; act.textContent = 'Tap again to confirm'; return; }
     act.disabled = true;
     try {
-      if (blocked) await unblockMac(d.mac); else await blockMac(d.mac);
-      closeSheet(); toast(blocked ? 'Unblocked' : 'Added to the list. Blocking only works while the filter is On (Blocking tab).', 4500); go('devices');
+      if (blocked) { await unblockMac(d.mac); closeSheet(); toast('Unblocked', 3000); go('devices'); }
+      else {
+        // Make sure the filter is on and in blocklist mode, add the device, then check the router really took it.
+        const st = filterState((await api('GET', MF + 'macfilter.asp')).body);
+        if (!(st.on && st.mode === '0')) await postForm(FURL, { 'x.MacFilterPolicy': '0', 'x.MacFilterRight': '1' });
+        await blockMac(d.mac);
+        await new Promise((ok) => setTimeout(ok, 1500));
+        const ok = (await loadBlocked()).some((x) => x.mac === d.mac.toLowerCase());
+        const on = filterState((await api('GET', MF + 'macfilter.asp')).body).on;
+        closeSheet(); toast(ok && on ? 'Blocked' : ok ? 'Added, but the filter is still OFF' : 'The router did not add it', 5000); go('devices');
+      }
     } catch (e) { toast(e.message); act.disabled = false; }
   };
 }
