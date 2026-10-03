@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '16';
+const UI_VER = '17';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -170,20 +170,45 @@ async function loadDevices() {
   return list;
 }
 
+async function blockMac(mac) {
+  return postForm(MF + 'add.cgi?x=InternetGatewayDevice.X_HW_Security.MacFilter&RequestFile=html/bbsp/macfilter/macfilter.asp',
+    { 'x.SourceMACAddress': mac });
+}
+async function unblockMac(mac) {
+  // Request copied from the router's own Delete button (captured in the old portal).
+  const list = await loadBlocked();
+  const e = list.find((x) => x.mac === mac.toLowerCase());
+  if (!e || !e.domain) throw new Error('That MAC is not in the router\'s filter list');
+  const f = {};
+  f[e.domain] = '';
+  return postForm(MF + 'del.cgi?x=InternetGatewayDevice.X_HW_Security.MacFilter&RequestFile=html/bbsp/macfilter/macfilter.asp', f);
+}
+function filterState(body) {
+  const e = /var\s+enableFilter\s*=\s*['"](\d*)['"]/.exec(body || '');
+  const m = /var\s+Mode\s*=\s*['"](\d*)['"]/.exec(body || '');
+  return { on: e ? e[1] === '1' : null, mode: m ? m[1] : null };
+}
+const stateText = (st) => st.on === null ? 'unknown' : (st.on ? 'ON' : 'OFF') + (st.mode === '0' ? ' · blocklist' : st.mode === '1' ? ' · allowlist' : '');
+const FURL = MF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&RequestFile=html/bbsp/macfilter/macfilter.asp';
+
 /* ------------------------------------------------------------ ui helpers */
-let current = 'devices';
-const TITLES = { devices: 'Devices', wifi: 'Wi-Fi', block: 'Blocking', tools: 'Tools' };
+let current = 'home';
+const TITLES = { home: 'Home', devices: 'Devices', wifi: 'Wi-Fi', block: 'Blocking', tools: 'More' };
+const views = {};
+const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+const jget = (k, d) => { try { return JSON.parse(pref(k, '')) || d; } catch (e) { return d; } };
+const jset = (k, v) => setPref(k, JSON.stringify(v));
 
 function toast(msg, ms) {
   const t = $('#toast');
   t.textContent = msg; t.hidden = false;
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => { t.hidden = true; }, ms || 2600);
+  toast._t = setTimeout(() => { t.hidden = true; }, ms || 2800);
 }
-function sheet(html) { $('#panel').innerHTML = html; $('#sheet').hidden = false; }
+function sheet(html) { $('#panel').innerHTML = '<div class="grab"></div>' + html; $('#sheet').hidden = false; }
 function closeSheet() { $('#sheet').hidden = true; }
 $('#sheet .scrim').onclick = closeSheet;
-window.onBack = () => { if (!$('#sheet').hidden) closeSheet(); else if (current !== 'devices') go('devices'); else ONT.exit(); };
+window.onBack = () => { if (!$('#sheet').hidden) closeSheet(); else if (current !== 'home') go('home'); else ONT.exit(); };
 const showBannerIfPending = () => { try { if (window.ONT && ONT.getPref('uiPending', '0') === '1') $('#banner').hidden = false; } catch (e) {} };
 window.onUiUpdated = showBannerIfPending;
 window.onUiStatus = () => { showBannerIfPending(); const el = $('#uistat'); if (el) el.textContent = ONT.getPref('uiStatus', 'not checked yet'); };
@@ -192,50 +217,196 @@ $('#reload').onclick = () => { try { ONT.ackUi(); } catch (e) {} location.reload
 $('#refresh').onclick = () => go(current);
 document.querySelectorAll('#tabs button').forEach((b) => { b.onclick = () => go(b.dataset.t); });
 
+let navId = 0;
 function go(tab) {
   current = tab;
+  const my = ++navId;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === tab));
   $('#title').textContent = TITLES[tab];
   $('#sub').textContent = '';
   $('#view').innerHTML = '<div class="empty"><span class="spin"></span></div>';
-  views[tab]().catch((e) => {
+  views[tab](() => my === navId).catch((e) => {
+    if (my !== navId) return;
     $('#view').innerHTML = '<div class="card pad"><b class="err">Something went wrong</b><div class="sm" style="margin-top:6px">' +
-      esc(e.message || e) + '</div><div style="margin-top:12px"><button class="b" id="retry">Try again</button></div></div>';
+      esc(e.message || e) + '</div><div style="margin-top:14px"><button class="b" id="retry">Try again</button></div></div>';
     $('#retry').onclick = () => go(tab);
   });
 }
-const initials = (d) => ((d.name || d.ip || '?').replace(/[^a-z0-9]/gi, '').slice(0, 2) || '?').toUpperCase();
-
-/* ------------------------------------------------------------ views */
-const views = {};
-
-let devQuery = '';
-const getNicks = () => { try { return JSON.parse(pref('nicks', '{}')); } catch (e) { return {}; } };
+const copyText = (t) => { if (window.ONT && ONT.copy) ONT.copy(t); else if (navigator.clipboard) navigator.clipboard.writeText(t); toast('Copied'); };
+const getNicks = () => jget('nicks', {});
 const ipNum = (ip) => (ip || '').split('.').reduce((a, x) => a * 256 + (+x || 0), 0);
+const isPrivate = (ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
 
-views.devices = async function () {
+/* ------------------------------------------------------------ timed blocks */
+async function sweepTimers() {
+  const t = jget('timers', {});
+  const due = Object.keys(t).filter((m) => t[m] <= Date.now());
+  if (!due.length) return;
+  for (const m of due) {
+    try { await unblockMac(m); } catch (e) { /* not in the list any more */ }
+    delete t[m];
+  }
+  jset('timers', t);
+}
+const left = (ts) => { const m = Math.max(1, Math.round((ts - Date.now()) / 60000)); return m >= 60 ? Math.round(m / 6) / 10 + ' h left' : m + ' min left'; };
+
+/* ------------------------------------------------------------ network health */
+async function pingOnce() {
+  const t0 = performance.now();
+  const c = new AbortController(); const to = setTimeout(() => c.abort(), 4000);
+  try { await fetch('https://www.gstatic.com/generate_204?' + Date.now(), { mode: 'no-cors', cache: 'no-store', signal: c.signal }); return performance.now() - t0; }
+  catch (e) { return null; } finally { clearTimeout(to); }
+}
+async function pingTest() {
+  const v = [];
+  for (let i = 0; i < 4; i++) { const x = await pingOnce(); if (x != null) v.push(x); }
+  if (!v.length) return { ok: false };
+  const avg = v.reduce((a, b) => a + b, 0) / v.length;
+  return { ok: true, ms: Math.round(avg), jitter: Math.round(Math.max(...v) - Math.min(...v)), lost: 4 - v.length };
+}
+const OPTIC_PATHS = ['/html/amp/opticinfo/opticinfo.asp', '/html/ssmp/opticinfo/opticinfo.asp', '/html/status/opticinfo.asp'];
+async function readOptical() {
+  const known = pref('opticPath', '');
+  const paths = known ? [known] : OPTIC_PATHS;
+  for (const p of paths) {
+    try {
+      const r = await api('GET', p);
+      if (r.status !== 200) continue;
+      const o = parseObjs(r.body).find((x) => /optic/i.test(x.type));
+      if (!o) continue;
+      setPref('opticPath', p);
+      const nums = o.f.filter((x) => !/^InternetGatewayDevice/.test(x)).map((x) => ({ raw: x, n: parseFloat(x) })).filter((x) => isFinite(x.n));
+      const rxI = nums.findIndex((x) => x.n < -3 && x.n > -45);
+      const rx = rxI >= 0 ? nums[rxI] : null;
+      const rest = nums.filter((_, i) => i !== rxI);
+      return { rx, tx: rest[0] || null, others: rest.slice(1), fields: o.f, path: p };
+    } catch (e) { /* try next */ }
+  }
+  return null;
+}
+const rxVerdict = (v) => v > -8 ? ['Too strong', 'warn', 100] : v >= -25 ? ['Good', 'ok', 100 - Math.max(0, (-v - 8) * 2)] : v >= -27.5 ? ['Marginal', 'warn', 25] : ['Weak', 'bad', 10];
+function spark(vals) {
+  if (vals.length < 2) return '';
+  const w = 300, h = 44, lo = Math.min(...vals) - 1, hi = Math.max(...vals) + 1;
+  const pts = vals.map((v, i) => (i * w / (vals.length - 1)).toFixed(1) + ',' + (h - (v - lo) / (hi - lo) * h).toFixed(1)).join(' ');
+  return '<svg class="spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none"><polyline points="' + pts + '" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>';
+}
+async function speedTest(onProgress) {
+  const c = new AbortController(); const to = setTimeout(() => c.abort(), 9000);
+  const t0 = performance.now(); let bytes = 0;
+  try {
+    const r = await fetch('https://speed.cloudflare.com/__down?bytes=40000000', { cache: 'no-store', signal: c.signal });
+    const rd = r.body.getReader();
+    for (;;) {
+      const { done, value } = await rd.read();
+      if (done) break;
+      bytes += value.length;
+      onProgress((bytes * 8 / 1e6) / ((performance.now() - t0) / 1000));
+    }
+  } catch (e) { if (!bytes) throw e; } finally { clearTimeout(to); }
+  return (bytes * 8 / 1e6) / ((performance.now() - t0) / 1000);
+}
+
+/* ------------------------------------------------------------ home */
+views.home = async function (alive) {
+  sweepTimers().catch(() => {});
+  $('#view').innerHTML = '<div class="empty"><span class="spin"></span></div>';
+  const [net, opt, devs, mf] = await Promise.all([
+    pingTest(),
+    readOptical().catch(() => null),
+    loadDevices().catch(() => []),
+    api('GET', MF + 'macfilter.asp').then((r) => filterState(r.body)).catch(() => ({ on: null })),
+  ]);
+  if (!alive()) return;
+  const hist = jget('hist', []);
+  hist.push({ t: Date.now(), rx: opt && opt.rx ? opt.rx.n : null, ms: net.ok ? net.ms : null });
+  jset('hist', hist.slice(-80));
+  const rxs = hist.map((h) => h.rx).filter((x) => x != null);
+  const online = devs.filter((d) => d.online).length;
+  const quality = !net.ok ? ['No internet', 'var(--bad)'] : net.ms > 150 || net.lost ? ['Unstable', 'var(--warn)'] : ['Connected', 'var(--ok)'];
+  $('#sub').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  let optHtml;
+  if (opt && opt.rx) {
+    const [vt, vc, pct] = rxVerdict(opt.rx.n);
+    optHtml = '<div class="card pad"><h2>Fibre signal</h2>' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:34px;font-weight:700;letter-spacing:-.03em">' + esc(opt.rx.raw) + ' <span style="font-size:15px;color:var(--mut);font-weight:500">dBm</span></div><span class="chip ' + vc + '" style="margin:0">' + vt + '</span></div>' +
+      '<div class="bar"><i style="width:' + pct + '%;background:var(--' + (vc === 'ok' ? 'ok' : vc === 'warn' ? 'warn' : 'bad') + ')"></i></div>' +
+      '<div class="sm">Received power. Between −8 and −25 is healthy.</div>' +
+      (opt.tx ? '<div class="kv" style="margin-top:12px"><span>Transmit</span><span>' + esc(opt.tx.raw) + '</span></div>' : '') +
+      opt.others.map((x, i) => '<div class="kv"><span>Reading ' + (i + 3) + '</span><span>' + esc(x.raw) + '</span></div>').join('') +
+      (rxs.length > 2 ? '<div style="color:var(--ink)">' + spark(rxs) + '</div><div class="sm">Last ' + rxs.length + ' checks</div>' : '') + '</div>';
+  } else {
+    optHtml = '<div class="card pad"><h2>Fibre signal</h2><div class="sm">Could not find the optical page on this router. Open More → Scan router pages and send me the result.</div></div>';
+  }
+  $('#view').innerHTML =
+    '<div class="hero"><div class="lab">Internet</div><div class="big"><span class="dot" style="background:' + quality[1] + '"></span>' + quality[0] + '</div>' +
+    '<div class="s2">' + (net.ok ? net.ms + ' ms' + (net.jitter > 40 ? ' · jittery' : '') + (net.lost ? ' · ' + net.lost + ' of 4 lost' : '') : 'Checked from this phone') + '</div></div>' +
+    '<div class="tiles"><div class="tile" data-go="devices"><div class="lab">Online</div><div class="v">' + online + '</div><div class="sm">of ' + devs.length + ' known</div></div>' +
+    '<div class="tile" data-go="block"><div class="lab">Blocking</div><div class="v">' + (mf.on === null ? '—' : mf.on ? 'On' : 'Off') + '</div><div class="sm">' + (mf.on ? (mf.mode === '1' ? 'allowlist' : 'blocklist') : 'filter') + '</div></div></div>' +
+    optHtml +
+    '<div class="card pad"><h2>Speed</h2><div id="spd" style="font-size:34px;font-weight:700;letter-spacing:-.03em">—</div><div class="sm" id="spds">Measures download speed from this phone.</div>' +
+    '<div style="margin-top:14px"><button class="b soft full" id="spdgo">Run speed test</button></div></div>' +
+    '<div class="card pad"><h2>Restart</h2><div class="sm">Reboots the router. Everything is offline for about two minutes.</div><div style="margin-top:14px"><button class="b soft full" id="rb">Restart router…</button></div></div>';
+  document.querySelectorAll('[data-go]').forEach((t) => { t.onclick = () => go(t.dataset.go); });
+  $('#spdgo').onclick = async () => {
+    const b = $('#spdgo'); b.disabled = true; b.textContent = 'Testing…';
+    try {
+      const v = await speedTest((x) => { $('#spd').innerHTML = x.toFixed(1) + ' <span style="font-size:15px;color:var(--mut);font-weight:500">Mbps</span>'; });
+      $('#spds').textContent = 'Download. Wi-Fi distance and other devices affect this.';
+      $('#spd').innerHTML = v.toFixed(1) + ' <span style="font-size:15px;color:var(--mut);font-weight:500">Mbps</span>';
+    } catch (e) { $('#spds').textContent = 'Test failed: ' + (e.message || e); }
+    b.disabled = false; b.textContent = 'Run again';
+  };
+  $('#rb').onclick = restartRouter;
+};
+
+async function restartRouter() {
+  sheet('<h2 style="margin:0 0 6px;font-size:22px">Restart the router?</h2><div class="sm" style="margin-bottom:18px">All devices lose internet for about two minutes.</div>' +
+    '<button class="b bad full" id="rbgo">Restart now</button><button class="b ghost full" id="x" style="margin-top:8px">Cancel</button>');
+  $('#x').onclick = closeSheet;
+  $('#rbgo').onclick = async () => {
+    closeSheet();
+    try {
+      const r = await postForm('/html/ssmp/devmanage/set.cgi?x=InternetGatewayDevice.X_HW_DEBUG.SMP.DM.ResetBoard&RequestFile=html/ssmp/devmanage/devmanage.asp', { 'x.X_HW_Reset': '1' });
+      toast('Sent (HTTP ' + r.status + '). Checking…', 4000);
+      await sleep(10000);
+      const p = await native('GET', '/', {}, '');
+      toast(p.status === 0 ? 'Router is restarting' : 'The router ignored the restart request', 6000);
+    } catch (e) { toast(e.message); }
+  };
+}
+
+/* ------------------------------------------------------------ devices */
+let devQuery = '';
+views.devices = async function (alive) {
+  await sweepTimers().catch(() => {});
   const [list, blocked] = await Promise.all([loadDevices(), loadBlocked().catch(() => [])]);
-  const nicks = getNicks();
+  if (!alive()) return;
+  const nicks = getNicks(), timers = jget('timers', {});
+  const firstRun = !pref('seen', '');
+  const seen = jget('seen', {});
+  list.forEach((d) => { if (d.mac && seen[d.mac.toLowerCase()] === undefined) seen[d.mac.toLowerCase()] = firstRun ? 0 : Date.now(); });
+  jset('seen', seen);
+  const isNew = (d) => d.mac && seen[d.mac.toLowerCase()] && Date.now() - seen[d.mac.toLowerCase()] < 86400000;
   const isBlocked = (m) => m && blocked.some((b) => b.mac === m.toLowerCase());
   const dn = (d) => (d.mac && nicks[d.mac.toLowerCase()]) || d.name || d.devType || d.ip || d.mac || '?';
   list.sort((x, y) => (y.online - x.online) || (ipNum(x.ip) - ipNum(y.ip)));
-  $('#sub').textContent = list.filter((d) => d.online).length + ' online · ' + list.length + ' known';
-  $('#view').innerHTML = '<input id="q" placeholder="Search name, IP or MAC" autocapitalize="off" value="' + esc(devQuery) + '" style="margin-bottom:12px"><div id="devs"></div>';
+  const newOnes = list.filter(isNew);
+  $('#sub').textContent = list.filter((d) => d.online).length + ' online · ' + list.length + ' known' + (newOnes.length ? ' · ' + newOnes.length + ' new' : '');
+  $('#view').innerHTML = '<input id="q" placeholder="Search" autocapitalize="off" value="' + esc(devQuery) + '" style="margin-bottom:14px"><div id="devs"></div>';
   const draw = () => {
     const q = devQuery.trim().toLowerCase();
     const shown = list.filter((d) => !q || [dn(d), d.ip, d.mac].some((x) => (x || '').toLowerCase().includes(q)));
     $('#devs').innerHTML = shown.length ? '<div class="card">' + shown.map((d) =>
-      '<div class="row" data-i="' + list.indexOf(d) + '"><div class="av" style="' + (d.online ? '' : 'opacity:.45') + '">' + esc(((dn(d)).replace(/[^a-z0-9]/gi, '').slice(0, 2) || '?').toUpperCase()) + '</div><div class="grow">' +
+      '<div class="row tap" data-i="' + list.indexOf(d) + '"><div class="av' + (d.online ? ' on' : '') + '" style="' + (d.online ? '' : 'opacity:.55') + '">' + esc(((dn(d)).replace(/[^a-z0-9]/gi, '').slice(0, 2) || '?').toUpperCase()) + '</div><div class="grow">' +
       '<div class="name">' + esc(dn(d)) + '</div>' +
       '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
-      '<span class="chip" style="' + (d.online ? 'color:var(--ok);border-color:var(--ok)' : '') + '">' + (d.online ? 'online' : (d.status ? esc(d.status.toLowerCase()) : 'offline')) + '</span>' +
-      (isBlocked(d.mac) ? '<span class="chip blocked">blocked</span>' : '') +
-      [d.portType, d.port, d.ipType].filter(Boolean).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') +
-      '</div><span class="sm">›</span></div>').join('') + '</div>'
-      : '<div class="empty">' + (list.length ? 'No match' : 'No devices parsed.<br>Open Tools → Raw to see what the router sent.') + '</div>';
-    document.querySelectorAll('#devs .row').forEach((row) => {
-      row.onclick = () => deviceSheet(list[+row.dataset.i], isBlocked, dn);
-    });
+      (isNew(d) ? '<span class="chip new">New</span>' : '') +
+      (isBlocked(d.mac) ? '<span class="chip blocked">Blocked' + (timers[d.mac.toLowerCase()] ? ' · ' + left(timers[d.mac.toLowerCase()]) : '') + '</span>' : '') +
+      [d.portType, d.port].filter(Boolean).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') +
+      '</div><span class="chev">›</span></div>').join('') + '</div>'
+      : '<div class="empty">' + (list.length ? 'No match' : 'No devices found') + '</div>';
+    document.querySelectorAll('#devs .row').forEach((row) => { row.onclick = () => deviceSheet(list[+row.dataset.i], isBlocked, dn); });
   };
   $('#q').oninput = (e) => { devQuery = e.target.value; draw(); };
   draw();
@@ -243,52 +414,72 @@ views.devices = async function () {
 
 function deviceSheet(d, isBlocked, dn) {
   const blocked = isBlocked(d.mac);
-  sheet('<h2 style="margin:0 0 4px;font-size:22px">' + esc(dn(d)) + '</h2>' +
+  let dur = 0;
+  sheet('<h2 style="margin:0 0 4px;font-size:24px;letter-spacing:-.02em">' + esc(dn(d)) + '</h2>' +
     '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
-    '<div style="margin:12px 0">' + [d.status, d.portType, d.port, d.ipType, d.devType, d.time].concat(d.other).filter(Boolean).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') + '</div>' +
+    '<div style="margin:10px 0 4px">' + [d.status, d.portType, d.port, d.ipType, d.devType, d.time].concat(d.other).filter(Boolean).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') + '</div>' +
     (d.mac ? '<label>Nickname (kept on this phone)</label><div class="seg" style="flex-wrap:nowrap"><input id="nick" value="' + esc(getNicks()[d.mac.toLowerCase()] || '') + '" placeholder="e.g. Ali\'s iPhone"><button class="b soft" id="nsave">Save</button></div>' : '') +
-    '<div style="height:14px"></div>' +
+    (d.mac && !blocked ? '<label>Block for</label><div class="segc" id="dur"><button data-h="0" class="on">Forever</button><button data-h="1">1 h</button><button data-h="2">2 h</button><button data-h="8">8 h</button><button data-h="24">24 h</button></div>' : '') +
+    '<div style="height:18px"></div>' +
     (d.mac ? (blocked
-      ? '<button class="b soft" id="act" style="width:100%">Unblock this device</button>'
-      : '<button class="b bad" id="act" style="width:100%">Block this device</button>') : '') +
-    '<button class="b ghost" id="x" style="width:100%;margin-top:10px">Close</button>');
+      ? '<button class="b soft full" id="act">Unblock this device</button>'
+      : '<button class="b bad full" id="act">Block this device</button>') : '') +
+    '<button class="b ghost full" id="x" style="margin-top:6px">Close</button>');
   $('#x').onclick = closeSheet;
+  document.querySelectorAll('#dur button').forEach((b) => b.onclick = () => {
+    dur = +b.dataset.h; document.querySelectorAll('#dur button').forEach((x) => x.classList.toggle('on', x === b));
+    if (dur) $('#act').textContent = 'Block for ' + dur + ' h'; else $('#act').textContent = 'Block this device';
+  });
   const ns = $('#nsave');
   if (ns) ns.onclick = () => {
     const n = getNicks(); const v = $('#nick').value.trim();
     if (v) n[d.mac.toLowerCase()] = v; else delete n[d.mac.toLowerCase()];
-    setPref('nicks', JSON.stringify(n)); closeSheet(); toast('Saved'); go('devices');
+    jset('nicks', n); closeSheet(); toast('Saved'); go('devices');
   };
   const act = $('#act');
   if (act) act.onclick = async () => {
     if (act.dataset.c !== '1') { act.dataset.c = '1'; act.textContent = 'Tap again to confirm'; return; }
     act.disabled = true;
     try {
-      if (blocked) { await unblockMac(d.mac); closeSheet(); toast('Unblocked', 3000); go('devices'); }
-      else {
-        // Make sure the filter is on and in blocklist mode, add the device, then check the router really took it.
+      const key = d.mac.toLowerCase();
+      if (blocked) {
+        await unblockMac(d.mac);
+        const t = jget('timers', {}); delete t[key]; jset('timers', t);
+        closeSheet(); toast('Unblocked'); go('devices');
+      } else {
         const st = filterState((await api('GET', MF + 'macfilter.asp')).body);
         if (!(st.on && st.mode === '0')) await postForm(FURL, { 'x.MacFilterPolicy': '0', 'x.MacFilterRight': '1' });
         await blockMac(d.mac);
-        await new Promise((ok) => setTimeout(ok, 1500));
-        const ok = (await loadBlocked()).some((x) => x.mac === d.mac.toLowerCase());
+        await sleep(1500);
+        const ok = (await loadBlocked()).some((x) => x.mac === key);
         const on = filterState((await api('GET', MF + 'macfilter.asp')).body).on;
-        closeSheet(); toast(ok && on ? 'Blocked' : ok ? 'Added, but the filter is still OFF' : 'The router did not add it', 5000); go('devices');
+        if (ok && dur) { const t = jget('timers', {}); t[key] = Date.now() + dur * 3600000; jset('timers', t); }
+        closeSheet(); toast(ok && on ? (dur ? 'Blocked for ' + dur + ' h' : 'Blocked') : ok ? 'Added, but the filter is still off' : 'The router did not add it', 4500); go('devices');
       }
     } catch (e) { toast(e.message); act.disabled = false; }
   };
 }
 
-views.wifi = async function () {
-  // Read the current SSID from the router so nothing is hard-coded.
+/* ------------------------------------------------------------ wi-fi */
+views.wifi = async function (alive) {
   const l = await api('GET', '/html/amp/common/wlan_list.asp');
-  const info = parseObjs(l.body).find((o) => o.type === 'stWlanInfo' && /WLANConfiguration\.1$/.test(o.f[0]));
-  const ssid = info ? info.f[2] : pref('ssid', '');
-  $('#view').innerHTML = '<div class="card pad"><h2>2.4 GHz network</h2>' +
+  if (!alive()) return;
+  const nets = parseObjs(l.body).filter((o) => o.type === 'stWlanInfo').map((o) => {
+    const m = /WLANConfiguration\.(\d+)$/.exec(o.f[0] || '');
+    return { idx: m ? +m[1] : 0, ssid: o.f[2] || '', f: o.f };
+  }).filter((n) => n.idx);
+  const main = nets.find((n) => n.idx === 1);
+  const ssid = main ? main.ssid : pref('ssid', '');
+  $('#sub').textContent = nets.length + ' network' + (nets.length === 1 ? '' : 's');
+  $('#view').innerHTML =
+    '<div class="card pad"><h2>2.4 GHz network</h2>' +
     '<label>Network name</label><input id="ssid" value="' + esc(ssid) + '" autocapitalize="off">' +
     '<label>New password (8–63 characters)</label><input id="pw" autocapitalize="off" autocomplete="off" placeholder="Type the new password">' +
-    '<div style="margin-top:16px"><button class="b" id="go" style="width:100%">Change password</button></div>' +
-    '<div class="sm" style="margin-top:10px">Everything connected over Wi-Fi, including this phone, drops and has to rejoin with the new password.</div></div>';
+    '<div style="margin-top:18px"><button class="b full" id="go">Save changes</button></div>' +
+    '<div class="sm" style="margin-top:12px">Everything on Wi-Fi, including this phone, drops and has to rejoin.</div></div>' +
+    '<div class="sec">All networks on the router</div><div class="card">' +
+    (nets.length ? nets.map((n) => '<div class="row"><div class="grow"><div class="name">' + esc(n.ssid || '(no name)') + '</div><div class="sm">' + (n.idx <= 4 ? '2.4 GHz' : '5 GHz') + ' · network ' + n.idx + '</div></div></div>').join('') : '<div class="empty">None found</div>') + '</div>' +
+    '<div class="sm" style="margin:0 8px 14px">Only the 2.4 GHz network can be edited here for now. 5 GHz and guest need one recording from the old portal (More → Record).</div>';
   $('#go').onclick = async () => {
     const pw = $('#pw').value, name = $('#ssid').value.trim();
     if (pw.length < 8 || pw.length > 63) return toast('Password must be 8–63 characters');
@@ -315,62 +506,99 @@ views.wifi = async function () {
       });
       toast(r.status < 400 ? 'Sent. Rejoin Wi-Fi with the new password.' : 'Router said HTTP ' + r.status, 5000);
     } catch (e) { toast(e.message); }
-    b.disabled = false; b.dataset.c = ''; b.textContent = 'Change password';
+    b.disabled = false; b.dataset.c = ''; b.textContent = 'Save changes';
   };
 };
 
-async function blockMac(mac) {
-  return postForm(MF + 'add.cgi?x=InternetGatewayDevice.X_HW_Security.MacFilter&RequestFile=html/bbsp/macfilter/macfilter.asp',
-    { 'x.SourceMACAddress': mac });
-}
-async function unblockMac(mac) {
-  // Request copied from the router's own Delete button (captured in the old portal).
-  const list = await loadBlocked();
-  const e = list.find((x) => x.mac === mac.toLowerCase());
-  if (!e || !e.domain) throw new Error('That MAC is not in the router\'s filter list');
-  const f = {};
-  f[e.domain] = '';
-  return postForm(MF + 'del.cgi?x=InternetGatewayDevice.X_HW_Security.MacFilter&RequestFile=html/bbsp/macfilter/macfilter.asp', f);
-}
-function filterState(body) {
-  const e = /var\s+enableFilter\s*=\s*['"](\d*)['"]/.exec(body || '');
-  const m = /var\s+Mode\s*=\s*['"](\d*)['"]/.exec(body || '');
-  return { on: e ? e[1] === '1' : null, mode: m ? m[1] : null };
-}
-const stateText = (st) => st.on === null ? 'unknown' : (st.on ? 'ON' : 'OFF') + (st.mode === '0' ? ' · blocklist' : st.mode === '1' ? ' · allowlist' : '');
-const FURL = MF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&RequestFile=html/bbsp/macfilter/macfilter.asp';
-
-views.block = async function () {
+/* ------------------------------------------------------------ blocking */
+views.block = async function (alive) {
+  await sweepTimers().catch(() => {});
   const list = await loadBlocked();
   const page = await api('GET', MF + 'macfilter.asp');
-  const dbg = (page.body || '').split(/\r?\n/).filter((l) => /MacFilter|Right|Policy|Enable|[Tt]oken|[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}/i.test(l)).map((l) => l.trim().slice(0, 220)).slice(0, 40).join('\n');
-  $('#sub').textContent = list.length + ' in the filter list';
-  const st0 = filterState(page.body);
+  if (!alive()) return;
+  const st = filterState(page.body), timers = jget('timers', {});
+  const mode = !st.on ? 'off' : st.mode === '1' ? 'allow' : 'block';
+  $('#sub').textContent = list.length + ' in the list';
   $('#view').innerHTML =
-    '<div class="card pad" style="border-left:5px solid ' + (st0.on ? 'var(--ok)' : 'var(--bad)') + '"><h2>Router says</h2><div class="name" id="fstate" style="font-size:20px">Filter is ' + esc(stateText(st0)) + '</div></div>' +
-    '<div class="card pad"><h2>Filter switch</h2><div class="seg" style="margin-top:8px">' +
-    '<button class="b soft sm2" data-p="0" data-r="1">On · blocklist</button>' +
-    '<button class="b soft sm2" data-p="1" data-r="1">On · allowlist</button>' +
-    '<button class="b ghost sm2" data-p="0" data-r="0">Off</button></div>' +
-    '<div class="sm" style="margin-top:10px">Blocklist: listed devices are blocked. Allowlist: only listed devices get internet, so be careful. The filter must be On for any blocking to work.</div></div>' +
-    '<div class="card pad"><h2>Diagnose</h2><div class="sm">Tries the filter switch several different ways and tells which one the router accepts.</div><div style="margin-top:10px"><button class="b soft sm2" id="diag">Run diagnose</button></div><pre id="diagout" hidden></pre><button class="b soft sm2" id="diagcp" hidden>Copy result</button></div>' +
-    '<div class="card pad"><h2>Add a MAC address</h2><input id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off">' +
-    '<div style="margin-top:12px"><button class="b" id="add" style="width:100%">Add to list</button></div></div>' +
-    '<div class="card"><h2 style="padding-top:12px">In the list</h2>' +
-    (list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + esc(x.mac) + '</div></div>' +
-      '<button class="b ghost sm2" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Empty</div>') + '</div>' +
-    (lastWrite ? '<div class="card pad"><h2>Last change sent</h2><pre>' + esc('HTTP ' + lastWrite.status + (lastWrite.loc ? ' → ' + lastWrite.loc : '') + '\n' + lastWrite.url + '\n' + lastWrite.body + '\nreply: ' + lastWrite.reply + '\nheaders: ' + lastWrite.hdrs) + '</pre><button class="b soft sm2" id="cpw">Copy this</button></div>' : '') +
-    '<div class="card pad"><h2>Debug: what the router says</h2><pre>' + esc(dbg || '(nothing matched)') + '</pre></div>';
-  document.querySelectorAll('button[data-p]').forEach((b) => b.onclick = async () => {
+    '<div class="card pad"><h2>Filter</h2><div class="segc" id="fsw">' +
+    '<button data-m="off" class="' + (mode === 'off' ? 'on' : '') + '">Off</button><button data-m="block" class="' + (mode === 'block' ? 'on' : '') + '">Blocklist</button><button data-m="allow" class="' + (mode === 'allow' ? 'on' : '') + '">Allowlist</button></div>' +
+    '<div class="sm" style="margin-top:12px">Blocklist: listed devices have no internet. Allowlist: only listed devices do, so be careful. The filter must be on for any blocking to work.</div></div>' +
+    '<div class="sec">Blocked devices</div><div class="card">' +
+    (list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + esc(((getNicks()[x.mac]) || x.mac)) + '</div><div class="sm">' + esc(x.mac) + (timers[x.mac] ? ' · ' + left(timers[x.mac]) : '') + '</div></div>' +
+      '<button class="b soft sm2" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Nothing blocked</div>') + '</div>' +
+    '<div class="card pad"><h2>Add by MAC address</h2><input id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off"><div style="margin-top:12px"><button class="b full" id="add">Add to list</button></div></div>';
+  document.querySelectorAll('#fsw button').forEach((b) => b.onclick = async () => {
+    const m = b.dataset.m;
+    if (m === 'allow' && b.dataset.c !== '1') { b.dataset.c = '1'; toast('Allowlist cuts off everyone not listed. Tap again to confirm.', 4500); return; }
+    const p = m === 'allow' ? '1' : '0', r = m === 'off' ? '0' : '1';
     try {
-      const r = await postForm(FURL, { 'x.MacFilterPolicy': b.dataset.p, 'x.MacFilterRight': b.dataset.r });
-      await new Promise((ok) => setTimeout(ok, 1500));
+      await postForm(FURL, { 'x.MacFilterPolicy': p, 'x.MacFilterRight': r });
+      await sleep(1500);
       const after = filterState((await api('GET', MF + 'macfilter.asp')).body);
-      const want = b.dataset.r === '1';
-      toast(after.on === want ? 'Confirmed: filter is now ' + stateText(after) : 'Router replied HTTP ' + r.status + ' but the filter is still ' + stateText(after), 6000);
+      toast((after.on === (r === '1')) ? 'Filter is now ' + stateText(after) : 'The router did not change the filter', 4500);
       go('block');
     } catch (e) { toast(e.message); }
   });
+  $('#add').onclick = async () => {
+    const mac = $('#mac').value.trim();
+    if (!MAC_RE.test(mac)) return toast('That is not a valid MAC address');
+    try {
+      await blockMac(mac); await sleep(1500);
+      toast((await loadBlocked()).some((x) => x.mac === mac.toLowerCase()) ? 'Added' : 'The router did not add it', 4000);
+      go('block');
+    } catch (e) { toast(e.message); }
+  };
+  document.querySelectorAll('button[data-u]').forEach((b) => b.onclick = async () => {
+    if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Sure?'; return; }
+    try { const m = list[+b.dataset.u].mac; await unblockMac(m); const t = jget('timers', {}); delete t[m]; jset('timers', t); toast('Removed'); go('block'); } catch (e) { toast(e.message); }
+  });
+};
+
+/* ------------------------------------------------------------ more */
+const SCAN = [
+  '/html/amp/opticinfo/opticinfo.asp', '/html/ssmp/opticinfo/opticinfo.asp', '/html/status/opticinfo.asp',
+  '/html/ssmp/deviceinfo/deviceinfo.asp', '/html/bbsp/waninfo/waninfo.asp', '/html/bbsp/wan/wan.asp', '/html/bbsp/common/GetWanInfo.asp',
+  '/html/bbsp/dhcpservercfg/dhcpservercfg.asp', '/html/bbsp/dns/dns.asp', '/html/bbsp/portmapping/portmapping.asp', '/html/bbsp/dmz/dmz.asp',
+  '/html/amp/wlanbasic/WlanBasic.asp', '/html/amp/wlanadvance/wlanadvance.asp', '/html/amp/common/wlan_list.asp',
+  '/html/ssmp/devmanage/devmanage.asp', '/html/ssmp/accoutcfg/accountcfg.asp', '/html/ssmp/syslog/syslog.asp', '/html/ssmp/time/time.asp',
+];
+views.tools = async function () {
+  const canCapture = window.ONT && typeof ONT.openCapture === 'function';
+  $('#view').innerHTML =
+    '<div class="sec">Router</div><div class="card pad">' +
+    '<label style="margin-top:0">Address</label><input id="host" value="' + esc(pref('host', '192.168.100.1')) + '" autocapitalize="off">' +
+    '<label>Username</label><input id="user" value="' + esc(pref('user', 'root')) + '" autocapitalize="off">' +
+    '<label>Password</label><input id="pass" type="password" value="' + esc(pref('pass', 'admin')) + '">' +
+    '<div style="margin-top:16px"><button class="b full" id="save">Save</button></div></div>' +
+    '<div class="sec">Add more features</div><div class="card pad"><div class="sm">Opens the router\'s original pages in here and records what each button sends, so I can build it. Passwords are hidden in the log.</div>' +
+    '<div style="margin-top:14px"><button class="b soft full" id="cap">' + (canCapture ? 'Record from the old portal' : 'Needs the latest app install') + '</button></div>' +
+    '<div style="margin-top:10px"><button class="b soft full" id="scan">Scan router pages</button></div><pre id="scanout" hidden></pre><button class="b ghost sm2" id="scancp" hidden>Copy result</button></div>' +
+    '<div class="sec">Diagnose</div><div class="card pad"><div class="sm">Tries the filter switch several ways and reports which the router accepts.</div><div style="margin-top:12px"><button class="b soft full" id="diag">Run filter diagnose</button></div><pre id="diagout" hidden></pre><button class="b ghost sm2" id="diagcp" hidden>Copy result</button></div>' +
+    '<div class="card pad"><h2>Raw request</h2>' +
+    '<input id="rp" value="/html/bbsp/common/GetLanUserDevInfo.asp" autocapitalize="off">' +
+    '<div class="seg" style="margin-top:10px"><select id="rm" style="width:auto"><option>POST</option><option>GET</option></select>' +
+    '<button class="b" id="rs">Send</button><button class="b soft" id="rc">Copy</button></div>' +
+    '<textarea id="rb" placeholder="Body (POST): a=1&b=2" style="margin-top:10px"></textarea><pre id="out">—</pre></div>' +
+    '<div class="sec">App</div><div class="card pad"><div class="kv"><span>UI version</span><span>' + UI_VER + '</span></div><div class="kv"><span>Update check</span><span id="uistat" style="font-weight:500;font-size:13px">' + esc(pref('uiStatus', 'not checked yet')) + '</span></div>' +
+    '<div style="margin-top:12px" class="seg"><button class="b soft sm2" id="chk">Check for update</button><button class="b ghost sm2" id="rst">Reset UI</button></div></div>';
+  $('#cap').onclick = () => { if (canCapture) ONT.openCapture(); else toast('Install the latest HG8347R.apk first'); };
+  $('#save').onclick = () => {
+    setPref('host', $('#host').value.trim()); setPref('user', $('#user').value.trim()); setPref('pass', $('#pass').value);
+    loggedIn = false; toast('Saved');
+  };
+  $('#scan').onclick = async () => {
+    const out = $('#scanout'); out.hidden = false; out.textContent = 'Scanning…'; let rep = '';
+    for (const p of SCAN) {
+      try {
+        const r = await api('GET', p);
+        const types = [...new Set(parseObjs(r.body).map((o) => o.type))].join(',');
+        const looksReal = r.status === 200 && !/<title>\s*Waiting/i.test(r.body || '') && (r.body || '').length > 300;
+        rep += (looksReal ? 'FOUND ' : 'no    ') + p + '  [' + r.status + ', ' + (r.body || '').length + ' bytes' + (types ? ', ' + types : '') + ']\n';
+      } catch (e) { rep += 'err   ' + p + '\n'; }
+      out.textContent = rep + '…';
+    }
+    out.textContent = rep; const cp = $('#scancp'); cp.hidden = false; cp.onclick = () => copyText(rep);
+  };
   $('#diag').onclick = async () => {
     const out = $('#diagout'); out.hidden = false; out.textContent = 'Running…';
     const BR = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36', Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Upgrade-Insecure-Requests': '1' };
@@ -403,54 +631,6 @@ views.block = async function () {
     rep += won ? '\nWORKED: ' + won : '\nNone of them turned it on.';
     out.textContent = rep; const cp = $('#diagcp'); cp.hidden = false; cp.onclick = () => { if (window.ONT && ONT.copy) ONT.copy(rep); toast('Copied'); };
   };
-  const cpw = $('#cpw');
-  if (cpw) cpw.onclick = () => { const t = 'HTTP ' + lastWrite.status + '\n' + lastWrite.url + '\n' + lastWrite.body + '\nreply: ' + lastWrite.reply + '\nheaders: ' + lastWrite.hdrs; if (window.ONT && ONT.copy) ONT.copy(t); toast('Copied'); };
-  $('#add').onclick = async () => {
-    const mac = $('#mac').value.trim();
-    if (!MAC_RE.test(mac)) return toast('That is not a valid MAC address');
-    try {
-      await blockMac(mac);
-      await new Promise((ok) => setTimeout(ok, 1500));
-      const now = await loadBlocked();
-      toast(now.some((x) => x.mac === mac.toLowerCase()) ? 'Added: the router now lists it' : 'Sent, but the router did not add it', 5000);
-      go('block');
-    } catch (e) { toast(e.message); }
-  };
-  document.querySelectorAll('button[data-u]').forEach((b) => b.onclick = async () => {
-    if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Sure?'; return; }
-    try { await unblockMac(list[+b.dataset.u].mac); toast('Remove sent'); go('block'); } catch (e) { toast(e.message); }
-  });
-};
-
-views.tools = async function () {
-  const canCapture = window.ONT && typeof ONT.openCapture === 'function';
-  $('#view').innerHTML =
-    '<div class="card pad"><h2>Record from the old portal</h2>' +
-    '<div class="sm">Opens the router\'s original pages inside this app and logs what each button sends, so I can build it here. Passwords and keys are hidden in the log.</div>' +
-    '<div style="margin-top:12px"><button class="b" id="cap">' + (canCapture ? 'Open the old portal' : 'Needs the latest app install') + '</button></div></div>' +
-    '<div class="card pad"><h2>Router</h2>' +
-    '<label>Address</label><input id="host" value="' + esc(pref('host', '192.168.100.1')) + '" autocapitalize="off">' +
-    '<label>Username</label><input id="user" value="' + esc(pref('user', 'root')) + '" autocapitalize="off">' +
-    '<label>Password</label><input id="pass" type="password" value="' + esc(pref('pass', 'admin')) + '">' +
-    '<div style="margin-top:14px"><button class="b" id="save">Save</button></div></div>' +
-    '<div class="card pad"><h2>Raw request</h2>' +
-    '<label>Path</label><input id="rp" value="/html/bbsp/common/GetLanUserDevInfo.asp" autocapitalize="off">' +
-    '<div class="seg" style="margin-top:10px"><select id="rm" style="width:auto"><option>POST</option><option>GET</option></select>' +
-    '<button class="b" id="rs">Send</button><button class="b ghost" id="rc">Copy</button></div>' +
-    '<label>Body (POST, form-encoded)</label><textarea id="rb" placeholder="a=1&b=2"></textarea>' +
-    '<div class="seg" style="margin-top:8px">' +
-    '<button class="b soft sm2" data-q="/html/bbsp/common/GetLanUserDhcpInfo.asp|POST">DHCP list</button>' +
-    '<button class="b soft sm2" data-q="/html/bbsp/macfilter/macfilter.asp|GET">MAC filter page</button>' +
-    '<button class="b soft sm2" data-q="/html/amp/wlanbasic/WlanBasic.asp|GET">Wi-Fi page</button></div>' +
-    '<pre id="out">—</pre></div>' +
-    '<div class="card pad"><h2>App</h2><div class="sm">UI version ' + UI_VER + '</div><div class="sm">Update check: <span id="uistat">' + esc(pref('uiStatus', 'not checked yet')) + '</span></div>' +
-    '<div style="margin:10px 0"><button class="b soft sm2" id="chk">Check for update now</button></div><div class="sm">UI source: ' + esc(pref('uiBase', 'GitHub (default)')) + '</div>' +
-    '<div style="margin-top:12px"><button class="b ghost" id="rst">Reset UI to built-in</button></div></div>';
-  $('#cap').onclick = () => { if (canCapture) ONT.openCapture(); else toast('Install the latest HG8347R.apk first'); };
-  $('#save').onclick = () => {
-    setPref('host', $('#host').value.trim()); setPref('user', $('#user').value.trim()); setPref('pass', $('#pass').value);
-    loggedIn = false; toast('Saved');
-  };
   const run = async () => {
     $('#out').textContent = '…';
     try {
@@ -459,12 +639,9 @@ views.tools = async function () {
     } catch (e) { $('#out').textContent = String(e.message || e); }
   };
   $('#rs').onclick = run;
-  $('#rc').onclick = () => { const t = $('#out').textContent; if (window.ONT && ONT.copy) { ONT.copy(t); toast('Copied'); } else if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => toast('Copied')); };
-  document.querySelectorAll('button[data-q]').forEach((b) => b.onclick = () => {
-    const [p, m] = b.dataset.q.split('|'); $('#rp').value = p; $('#rm').value = m; run();
-  });
+  $('#rc').onclick = () => copyText($('#out').textContent);
   $('#rst').onclick = () => ONT.resetUi();
   $('#chk').onclick = () => { if (ONT.checkUiNow) { $('#uistat').textContent = 'checking…'; ONT.checkUiNow(); } else toast('Needs the latest app install'); };
 };
 
-go('devices');
+go('home');

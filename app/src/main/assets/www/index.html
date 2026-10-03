@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>HG8347R</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -11,19 +12,20 @@
 
 <header>
   <div>
-    <h1 id="title">Devices</h1>
+    <h1 id="title">Home</h1>
     <div id="sub" class="muted"></div>
   </div>
-  <button id="refresh" class="icon" aria-label="Refresh">⟳</button>
+  <button id="refresh" class="icon" aria-label="Refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg></button>
 </header>
 
 <main id="view"></main>
 
 <nav id="tabs">
-  <button data-t="devices" class="on"><i>▤</i>Devices</button>
-  <button data-t="wifi"><i>◉</i>Wi-Fi</button>
-  <button data-t="block"><i>⊘</i>Blocking</button>
-  <button data-t="tools"><i>⚙</i>Tools</button>
+  <button data-t="home" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>Home</button>
+  <button data-t="devices"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>Devices</button>
+  <button data-t="wifi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 9a14 14 0 0 1 19 0"/><path d="M5.8 12.6a9.5 9.5 0 0 1 12.4 0"/><path d="M9 16a5 5 0 0 1 6 0"/><circle cx="12" cy="19.2" r=".8" fill="currentColor"/></svg>Wi-Fi</button>
+  <button data-t="block"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>Blocking</button>
+  <button data-t="tools"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="19" cy="12" r="1.2" fill="currentColor"/></svg>More</button>
 </nav>
 
 <div id="sheet" hidden>
