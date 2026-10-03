@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '14';
+const UI_VER = '15';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -73,15 +73,20 @@ async function api(method, path, headers, body) {
 async function token() { return clean((await api('POST', '/asp/GetRandCount.asp')).body); }
 let lastWrite = null;
 const plain = (h) => String(h || '').replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+const BRH = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36', Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Upgrade-Insecure-Requests': '1' };
+const pageToken = (t) => { const m = /name=["']?onttoken["']?[^>]*value=["']?([0-9a-f]{20,})/i.exec(t) || /value=["']?([0-9a-f]{32})["']?[^>]*name=["']?onttoken/i.exec(t) || /id=["']?hwonttoken["']?[^>]*value=["']?([0-9a-f]{20,})/i.exec(t); return m ? m[1] : ''; };
 async function postForm(path, fields) {
   const p = new URLSearchParams();
   Object.keys(fields).forEach((k) => p.append(k, fields[k]));
-  const tok = await token();
-  p.append('x.X_HW_Token', tok);
-  // The old portal sends the page it came from as Referer; do the same.
+  const host = pref('host', '192.168.100.1');
   const rf = /[?&]RequestFile=([^&]+)/.exec(path);
-  const hdrs = Object.assign({}, FORM);
-  if (rf) hdrs.Referer = 'http://' + pref('host', '192.168.100.1') + '/' + rf[1];
+  // The router only accepts the token that is printed inside the page the form lives on, so load that page first.
+  let tok = '';
+  if (rf) tok = pageToken((await api('GET', '/' + rf[1], BRH)).body || '');
+  if (!tok) tok = await token();
+  p.append('x.X_HW_Token', tok);
+  const hdrs = Object.assign({}, BRH, FORM, { Origin: 'http://' + host });
+  if (rf) hdrs.Referer = 'http://' + host + '/' + rf[1];
   const body = p.toString();
   const r = await api('POST', path, hdrs, body);
   lastWrite = {
