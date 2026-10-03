@@ -1,14 +1,20 @@
 :root{
-  --bg:#ffffff;--bg2:#f5f5f7;--card:#f5f5f7;--ink:#1d1d1f;--mut:#86868b;--line:#e5e5ea;
-  --btn:#1d1d1f;--btnink:#ffffff;--soft:#e8e8ed;
-  --ok:#248a3d;--bad:#d70015;--warn:#b25000;--acc:#0071e3;
-  --blur:rgba(255,255,255,.78);
-  --r:20px;
+  /* default: AMOLED pitch black */
+  --bg:#000000;--bg2:#0a0a0a;--card:#101012;--ink:#ffffff;--mut:#8e8e93;--line:#1f1f22;
+  --btn:#ffffff;--btnink:#000000;--soft:#1c1c1f;--ok:#30d158;--bad:#ff453a;--warn:#ff9f0a;--acc:#0a84ff;
+  --blur:rgba(0,0,0,.72);--r:20px;color-scheme:dark
 }
-@media(prefers-color-scheme:dark){
-  :root{--bg:#000000;--bg2:#1c1c1e;--card:#1c1c1e;--ink:#f5f5f7;--mut:#8e8e93;--line:#2c2c2e;
-    --btn:#f5f5f7;--btnink:#000000;--soft:#2c2c2e;--ok:#30d158;--bad:#ff453a;--warn:#ff9f0a;--acc:#0a84ff;
-    --blur:rgba(0,0,0,.72)}
+:root[data-theme=light]{
+  --bg:#ffffff;--bg2:#f5f5f7;--card:#f5f5f7;--ink:#1d1d1f;--mut:#86868b;--line:#e5e5ea;
+  --btn:#1d1d1f;--btnink:#ffffff;--soft:#e8e8ed;--ok:#248a3d;--bad:#d70015;--warn:#b25000;--acc:#0071e3;
+  --blur:rgba(255,255,255,.78);color-scheme:light
+}
+@media(prefers-color-scheme:light){
+  :root[data-theme=auto]{
+    --bg:#ffffff;--bg2:#f5f5f7;--card:#f5f5f7;--ink:#1d1d1f;--mut:#86868b;--line:#e5e5ea;
+    --btn:#1d1d1f;--btnink:#ffffff;--soft:#e8e8ed;--ok:#248a3d;--bad:#d70015;--warn:#b25000;--acc:#0071e3;
+    --blur:rgba(255,255,255,.78);color-scheme:light
+  }
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
@@ -74,7 +80,7 @@ pre{white-space:pre-wrap;word-break:break-all;background:var(--soft);border-radi
 .seg{display:flex;gap:6px;flex-wrap:wrap}
 .segc{display:flex;background:var(--soft);border-radius:12px;padding:3px;gap:2px}
 .segc button{flex:1;border:0;background:none;color:var(--ink);padding:9px 6px;border-radius:10px;font:inherit;font-size:14px;font-weight:600}
-.segc button.on{background:var(--bg);box-shadow:0 1px 3px #0003}
+.segc button.on{background:var(--btn);color:var(--btnink)}
 .empty{text-align:center;color:var(--mut);padding:44px 10px}
 .err{color:var(--bad)}.okc{color:var(--ok)}
 .sw{position:relative;width:51px;height:31px;border-radius:99px;background:var(--soft);border:0;flex:none;transition:background .2s;padding:0}
@@ -99,3 +105,27 @@ nav#tabs button.on{color:var(--ink)}
 [hidden]{display:none!important}
 .spin{display:inline-block;width:20px;height:20px;border:3px solid var(--soft);border-top-color:var(--ink);border-radius:50%;animation:s .8s linear infinite;vertical-align:-5px}
 @keyframes s{to{transform:rotate(360deg)}}
+
+/* motion */
+html{transition:background-color .35s ease}
+body,.card,.tile,.row,nav#tabs,.panel,input,.soft{transition:background-color .35s ease,color .35s ease,border-color .35s ease}
+#view.go>*{animation:rise .42s cubic-bezier(.2,.8,.2,1) both}
+#view.go>*:nth-child(2){animation-delay:.04s}#view.go>*:nth-child(3){animation-delay:.08s}
+#view.go>*:nth-child(4){animation-delay:.12s}#view.go>*:nth-child(5){animation-delay:.16s}
+#view.go>*:nth-child(n+6){animation-delay:.2s}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+#sheet .scrim{animation:fade .25s ease both}
+@keyframes fade{from{opacity:0}}
+#sheet .panel{animation:up .34s cubic-bezier(.2,.8,.2,1) both}
+@keyframes up{from{transform:translateY(60px);opacity:0}}
+#toast{animation:pop .28s cubic-bezier(.2,.8,.2,1) both}
+@keyframes pop{from{opacity:0;transform:translate(-50%,10px) scale(.96)}}
+button{transition:transform .12s ease,opacity .15s ease,background-color .2s ease}
+button:active{transform:scale(.97)}
+.row.tap{transition:opacity .15s ease,transform .12s ease}.row.tap:active{transform:scale(.99)}
+nav#tabs button svg{transition:transform .2s cubic-bezier(.2,.8,.2,1)}
+nav#tabs button.on svg{transform:translateY(-1px) scale(1.1)}
+.bar>i{transition:width .8s cubic-bezier(.2,.8,.2,1)}
+.segc button{transition:background-color .2s ease,box-shadow .2s ease}
+.hero{animation:rise .5s cubic-bezier(.2,.8,.2,1) both}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

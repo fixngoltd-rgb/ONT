@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '17';
+const UI_VER = '18';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -23,6 +23,8 @@ function native(method, path, headers, body) {
 }
 const pref = (k, d) => (window.ONT ? ONT.getPref(k, d) : d);
 const setPref = (k, v) => window.ONT && ONT.setPref(k, v);
+const applyTheme = () => { document.documentElement.setAttribute('data-theme', pref('theme', 'dark')); };
+applyTheme();
 
 /* ------------------------------------------------------------ session + api */
 let loggedIn = false;
@@ -222,10 +224,11 @@ function go(tab) {
   current = tab;
   const my = ++navId;
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === tab));
+  $('#view').classList.remove('go');
   $('#title').textContent = TITLES[tab];
   $('#sub').textContent = '';
   $('#view').innerHTML = '<div class="empty"><span class="spin"></span></div>';
-  views[tab](() => my === navId).catch((e) => {
+  views[tab](() => my === navId).then(() => { if (my === navId) { const v = $('#view'); v.classList.remove('go'); void v.offsetWidth; v.classList.add('go'); v.scrollTop = 0; } }).catch((e) => {
     if (my !== navId) return;
     $('#view').innerHTML = '<div class="card pad"><b class="err">Something went wrong</b><div class="sm" style="margin-top:6px">' +
       esc(e.message || e) + '</div><div style="margin-top:14px"><button class="b" id="retry">Try again</button></div></div>';
@@ -565,6 +568,7 @@ const SCAN = [
 views.tools = async function () {
   const canCapture = window.ONT && typeof ONT.openCapture === 'function';
   $('#view').innerHTML =
+    '<div class="sec">Appearance</div><div class="card pad"><div class="segc" id="thm"><button data-v="dark">Black</button><button data-v="light">Light</button><button data-v="auto">Auto</button></div></div>' +
     '<div class="sec">Router</div><div class="card pad">' +
     '<label style="margin-top:0">Address</label><input id="host" value="' + esc(pref('host', '192.168.100.1')) + '" autocapitalize="off">' +
     '<label>Username</label><input id="user" value="' + esc(pref('user', 'root')) + '" autocapitalize="off">' +
@@ -581,6 +585,9 @@ views.tools = async function () {
     '<textarea id="rb" placeholder="Body (POST): a=1&b=2" style="margin-top:10px"></textarea><pre id="out">—</pre></div>' +
     '<div class="sec">App</div><div class="card pad"><div class="kv"><span>UI version</span><span>' + UI_VER + '</span></div><div class="kv"><span>Update check</span><span id="uistat" style="font-weight:500;font-size:13px">' + esc(pref('uiStatus', 'not checked yet')) + '</span></div>' +
     '<div style="margin-top:12px" class="seg"><button class="b soft sm2" id="chk">Check for update</button><button class="b ghost sm2" id="rst">Reset UI</button></div></div>';
+  const markTheme = () => document.querySelectorAll('#thm button').forEach((b) => b.classList.toggle('on', b.dataset.v === pref('theme', 'dark')));
+  markTheme();
+  document.querySelectorAll('#thm button').forEach((b) => b.onclick = () => { setPref('theme', b.dataset.v); applyTheme(); markTheme(); });
   $('#cap').onclick = () => { if (canCapture) ONT.openCapture(); else toast('Install the latest HG8347R.apk first'); };
   $('#save').onclick = () => {
     setPref('host', $('#host').value.trim()); setPref('user', $('#user').value.trim()); setPref('pass', $('#pass').value);
