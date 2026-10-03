@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '18';
+const UI_VER = '19';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -23,6 +23,8 @@ function native(method, path, headers, body) {
 }
 const pref = (k, d) => (window.ONT ? ONT.getPref(k, d) : d);
 const setPref = (k, v) => window.ONT && ONT.setPref(k, v);
+const PV = (t) => '<span class="pv">' + esc(t) + '</span>';
+const applyPriv = () => { const on = pref('priv', '0') === '1'; document.documentElement.classList.toggle('priv', on); const b = document.getElementById('priv'); if (b) { b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); } };
 const applyTheme = () => { document.documentElement.setAttribute('data-theme', pref('theme', 'dark')); };
 applyTheme();
 
@@ -217,6 +219,8 @@ window.onUiStatus = () => { showBannerIfPending(); const el = $('#uistat'); if (
 setInterval(showBannerIfPending, 2000);
 $('#reload').onclick = () => { try { ONT.ackUi(); } catch (e) {} location.reload(); };
 $('#refresh').onclick = () => go(current);
+$('#priv').onclick = () => { setPref('priv', pref('priv', '0') === '1' ? '0' : '1'); applyPriv(); toast(pref('priv', '0') === '1' ? 'Details hidden' : 'Details shown', 1600); };
+applyPriv();
 document.querySelectorAll('#tabs button').forEach((b) => { b.onclick = () => go(b.dataset.t); });
 
 let navId = 0;
@@ -396,14 +400,14 @@ views.devices = async function (alive) {
   list.sort((x, y) => (y.online - x.online) || (ipNum(x.ip) - ipNum(y.ip)));
   const newOnes = list.filter(isNew);
   $('#sub').textContent = list.filter((d) => d.online).length + ' online · ' + list.length + ' known' + (newOnes.length ? ' · ' + newOnes.length + ' new' : '');
-  $('#view').innerHTML = '<input id="q" placeholder="Search" autocapitalize="off" value="' + esc(devQuery) + '" style="margin-bottom:14px"><div id="devs"></div>';
+  $('#view').innerHTML = '<input class="pv" id="q" placeholder="Search" autocapitalize="off" value="' + esc(devQuery) + '" style="margin-bottom:14px"><div id="devs"></div>';
   const draw = () => {
     const q = devQuery.trim().toLowerCase();
     const shown = list.filter((d) => !q || [dn(d), d.ip, d.mac].some((x) => (x || '').toLowerCase().includes(q)));
     $('#devs').innerHTML = shown.length ? '<div class="card">' + shown.map((d) =>
-      '<div class="row tap" data-i="' + list.indexOf(d) + '"><div class="av' + (d.online ? ' on' : '') + '" style="' + (d.online ? '' : 'opacity:.55') + '">' + esc(((dn(d)).replace(/[^a-z0-9]/gi, '').slice(0, 2) || '?').toUpperCase()) + '</div><div class="grow">' +
-      '<div class="name">' + esc(dn(d)) + '</div>' +
-      '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
+      '<div class="row tap" data-i="' + list.indexOf(d) + '"><div class="av' + (d.online ? ' on' : '') + '" style="' + (d.online ? '' : 'opacity:.55') + '">' + PV(((dn(d)).replace(/[^a-z0-9]/gi, '').slice(0, 2) || '?').toUpperCase()) + '</div><div class="grow">' +
+      '<div class="name">' + PV(dn(d)) + '</div>' +
+      '<div class="sm">' + PV([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
       (isNew(d) ? '<span class="chip new">New</span>' : '') +
       (isBlocked(d.mac) ? '<span class="chip blocked">Blocked' + (timers[d.mac.toLowerCase()] ? ' · ' + left(timers[d.mac.toLowerCase()]) : '') + '</span>' : '') +
       [d.portType, d.port].filter(Boolean).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') +
@@ -418,10 +422,10 @@ views.devices = async function (alive) {
 function deviceSheet(d, isBlocked, dn) {
   const blocked = isBlocked(d.mac);
   let dur = 0;
-  sheet('<h2 style="margin:0 0 4px;font-size:24px;letter-spacing:-.02em">' + esc(dn(d)) + '</h2>' +
-    '<div class="sm">' + esc([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
-    '<div style="margin:10px 0 4px">' + [d.status, d.portType, d.port, d.ipType, d.devType, d.time].concat(d.other).filter(Boolean).map((x) => '<span class="chip">' + esc(x) + '</span>').join('') + '</div>' +
-    (d.mac ? '<label>Nickname (kept on this phone)</label><div class="seg" style="flex-wrap:nowrap"><input id="nick" value="' + esc(getNicks()[d.mac.toLowerCase()] || '') + '" placeholder="e.g. Ali\'s iPhone"><button class="b soft" id="nsave">Save</button></div>' : '') +
+  sheet('<h2 style="margin:0 0 4px;font-size:24px;letter-spacing:-.02em">' + PV(dn(d)) + '</h2>' +
+    '<div class="sm">' + PV([d.ip, d.mac].filter(Boolean).join(' · ')) + '</div>' +
+    '<div style="margin:10px 0 4px">' + [d.status, d.portType, d.port, d.ipType, d.devType, d.time].concat(d.other).filter(Boolean).map((x) => '<span class="chip pv">' + esc(x) + '</span>').join('') + '</div>' +
+    (d.mac ? '<label>Nickname (kept on this phone)</label><div class="seg" style="flex-wrap:nowrap"><input class="pv" id="nick" value="' + esc(getNicks()[d.mac.toLowerCase()] || '') + '" placeholder="e.g. Ali\'s iPhone"><button class="b soft" id="nsave">Save</button></div>' : '') +
     (d.mac && !blocked ? '<label>Block for</label><div class="segc" id="dur"><button data-h="0" class="on">Forever</button><button data-h="1">1 h</button><button data-h="2">2 h</button><button data-h="8">8 h</button><button data-h="24">24 h</button></div>' : '') +
     '<div style="height:18px"></div>' +
     (d.mac ? (blocked
@@ -476,12 +480,12 @@ views.wifi = async function (alive) {
   $('#sub').textContent = nets.length + ' network' + (nets.length === 1 ? '' : 's');
   $('#view').innerHTML =
     '<div class="card pad"><h2>2.4 GHz network</h2>' +
-    '<label>Network name</label><input id="ssid" value="' + esc(ssid) + '" autocapitalize="off">' +
-    '<label>New password (8–63 characters)</label><input id="pw" autocapitalize="off" autocomplete="off" placeholder="Type the new password">' +
+    '<label>Network name</label><input class="pv" id="ssid" value="' + esc(ssid) + '" autocapitalize="off">' +
+    '<label>New password (8–63 characters)</label><input class="pv" id="pw" autocapitalize="off" autocomplete="off" placeholder="Type the new password">' +
     '<div style="margin-top:18px"><button class="b full" id="go">Save changes</button></div>' +
     '<div class="sm" style="margin-top:12px">Everything on Wi-Fi, including this phone, drops and has to rejoin.</div></div>' +
     '<div class="sec">All networks on the router</div><div class="card">' +
-    (nets.length ? nets.map((n) => '<div class="row"><div class="grow"><div class="name">' + esc(n.ssid || '(no name)') + '</div><div class="sm">' + (n.idx <= 4 ? '2.4 GHz' : '5 GHz') + ' · network ' + n.idx + '</div></div></div>').join('') : '<div class="empty">None found</div>') + '</div>' +
+    (nets.length ? nets.map((n) => '<div class="row"><div class="grow"><div class="name">' + PV(n.ssid || '(no name)') + '</div><div class="sm">' + (n.idx <= 4 ? '2.4 GHz' : '5 GHz') + ' · network ' + n.idx + '</div></div></div>').join('') : '<div class="empty">None found</div>') + '</div>' +
     '<div class="sm" style="margin:0 8px 14px">Only the 2.4 GHz network can be edited here for now. 5 GHz and guest need one recording from the old portal (More → Record).</div>';
   $('#go').onclick = async () => {
     const pw = $('#pw').value, name = $('#ssid').value.trim();
@@ -527,9 +531,9 @@ views.block = async function (alive) {
     '<button data-m="off" class="' + (mode === 'off' ? 'on' : '') + '">Off</button><button data-m="block" class="' + (mode === 'block' ? 'on' : '') + '">Blocklist</button><button data-m="allow" class="' + (mode === 'allow' ? 'on' : '') + '">Allowlist</button></div>' +
     '<div class="sm" style="margin-top:12px">Blocklist: listed devices have no internet. Allowlist: only listed devices do, so be careful. The filter must be on for any blocking to work.</div></div>' +
     '<div class="sec">Blocked devices</div><div class="card">' +
-    (list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + esc(((getNicks()[x.mac]) || x.mac)) + '</div><div class="sm">' + esc(x.mac) + (timers[x.mac] ? ' · ' + left(timers[x.mac]) : '') + '</div></div>' +
+    (list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + PV(((getNicks()[x.mac]) || x.mac)) + '</div><div class="sm">' + PV(x.mac) + (timers[x.mac] ? ' · ' + left(timers[x.mac]) : '') + '</div></div>' +
       '<button class="b soft sm2" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Nothing blocked</div>') + '</div>' +
-    '<div class="card pad"><h2>Add by MAC address</h2><input id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off"><div style="margin-top:12px"><button class="b full" id="add">Add to list</button></div></div>';
+    '<div class="card pad"><h2>Add by MAC address</h2><input class="pv" id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off"><div style="margin-top:12px"><button class="b full" id="add">Add to list</button></div></div>';
   document.querySelectorAll('#fsw button').forEach((b) => b.onclick = async () => {
     const m = b.dataset.m;
     if (m === 'allow' && b.dataset.c !== '1') { b.dataset.c = '1'; toast('Allowlist cuts off everyone not listed. Tap again to confirm.', 4500); return; }
@@ -570,19 +574,19 @@ views.tools = async function () {
   $('#view').innerHTML =
     '<div class="sec">Appearance</div><div class="card pad"><div class="segc" id="thm"><button data-v="dark">Black</button><button data-v="light">Light</button><button data-v="auto">Auto</button></div></div>' +
     '<div class="sec">Router</div><div class="card pad">' +
-    '<label style="margin-top:0">Address</label><input id="host" value="' + esc(pref('host', '192.168.100.1')) + '" autocapitalize="off">' +
-    '<label>Username</label><input id="user" value="' + esc(pref('user', 'root')) + '" autocapitalize="off">' +
-    '<label>Password</label><input id="pass" type="password" value="' + esc(pref('pass', 'admin')) + '">' +
+    '<label style="margin-top:0">Address</label><input class="pv" id="host" value="' + esc(pref('host', '192.168.100.1')) + '" autocapitalize="off">' +
+    '<label>Username</label><input class="pv" id="user" value="' + esc(pref('user', 'root')) + '" autocapitalize="off">' +
+    '<label>Password</label><input class="pv" id="pass" type="password" value="' + esc(pref('pass', 'admin')) + '">' +
     '<div style="margin-top:16px"><button class="b full" id="save">Save</button></div></div>' +
     '<div class="sec">Add more features</div><div class="card pad"><div class="sm">Opens the router\'s original pages in here and records what each button sends, so I can build it. Passwords are hidden in the log.</div>' +
     '<div style="margin-top:14px"><button class="b soft full" id="cap">' + (canCapture ? 'Record from the old portal' : 'Needs the latest app install') + '</button></div>' +
-    '<div style="margin-top:10px"><button class="b soft full" id="scan">Scan router pages</button></div><pre id="scanout" hidden></pre><button class="b ghost sm2" id="scancp" hidden>Copy result</button></div>' +
-    '<div class="sec">Diagnose</div><div class="card pad"><div class="sm">Tries the filter switch several ways and reports which the router accepts.</div><div style="margin-top:12px"><button class="b soft full" id="diag">Run filter diagnose</button></div><pre id="diagout" hidden></pre><button class="b ghost sm2" id="diagcp" hidden>Copy result</button></div>' +
+    '<div style="margin-top:10px"><button class="b soft full" id="scan">Scan router pages</button></div><pre class="pv" id="scanout" hidden></pre><button class="b ghost sm2" id="scancp" hidden>Copy result</button></div>' +
+    '<div class="sec">Diagnose</div><div class="card pad"><div class="sm">Tries the filter switch several ways and reports which the router accepts.</div><div style="margin-top:12px"><button class="b soft full" id="diag">Run filter diagnose</button></div><pre class="pv" id="diagout" hidden></pre><button class="b ghost sm2" id="diagcp" hidden>Copy result</button></div>' +
     '<div class="card pad"><h2>Raw request</h2>' +
-    '<input id="rp" value="/html/bbsp/common/GetLanUserDevInfo.asp" autocapitalize="off">' +
+    '<input class="pv" id="rp" value="/html/bbsp/common/GetLanUserDevInfo.asp" autocapitalize="off">' +
     '<div class="seg" style="margin-top:10px"><select id="rm" style="width:auto"><option>POST</option><option>GET</option></select>' +
     '<button class="b" id="rs">Send</button><button class="b soft" id="rc">Copy</button></div>' +
-    '<textarea id="rb" placeholder="Body (POST): a=1&b=2" style="margin-top:10px"></textarea><pre id="out">—</pre></div>' +
+    '<textarea class="pv" id="rb" placeholder="Body (POST): a=1&b=2" style="margin-top:10px"></textarea><pre class="pv" id="out">—</pre></div>' +
     '<div class="sec">App</div><div class="card pad"><div class="kv"><span>UI version</span><span>' + UI_VER + '</span></div><div class="kv"><span>Update check</span><span id="uistat" style="font-weight:500;font-size:13px">' + esc(pref('uiStatus', 'not checked yet')) + '</span></div>' +
     '<div style="margin-top:12px" class="seg"><button class="b soft sm2" id="chk">Check for update</button><button class="b ghost sm2" id="rst">Reset UI</button></div></div>';
   const markTheme = () => document.querySelectorAll('#thm button').forEach((b) => b.classList.toggle('on', b.dataset.v === pref('theme', 'dark')));

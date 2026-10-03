@@ -129,3 +129,11 @@ nav#tabs button.on svg{transform:translateY(-1px) scale(1.1)}
 .segc button{transition:background-color .2s ease,box-shadow .2s ease}
 .hero{animation:rise .5s cubic-bezier(.2,.8,.2,1) both}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* privacy mode */
+#priv .ec{display:none}
+#priv.on .eo{display:none}#priv.on .ec{display:block}
+#priv.on{background:var(--btn);color:var(--btnink)}
+.pv{transition:filter .25s ease}
+.priv .pv{filter:blur(9px);user-select:none;-webkit-user-select:none;pointer-events:none}
+.priv .av .pv{filter:blur(6px)}
