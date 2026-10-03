@@ -110,10 +110,10 @@ button { font-family: inherit; }
 }
 
 .pull-indicator {
-  text-align: center; font-size: 0.78rem; color: var(--muted); padding: 6px 0; height: 0;
-  overflow: hidden; transition: height 0.15s;
+  text-align: center; font-size: 0.78rem; color: var(--muted); padding: 0; height: 0;
+  overflow: hidden; transition: height 0.15s, padding 0.15s;
 }
-.pull-indicator.show { height: 28px; }
+.pull-indicator.show { height: 28px; padding: 6px 0; }
 
 .job-card {
   background: var(--card); border: 1px solid var(--border); border-radius: 12px;
