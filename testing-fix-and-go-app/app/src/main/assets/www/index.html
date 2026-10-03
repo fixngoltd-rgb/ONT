@@ -22,18 +22,59 @@
 <div id="app">
   <div id="top-header">
     <div class="title">FIX AND GO<span> BOARD</span></div>
-    <div class="user-chip">
-      <span id="user-name"></span>
-      <button onclick="doLogout()">Sign Out</button>
+    <div class="header-actions">
+      <button class="hdr-icon-btn" id="team-btn" onclick="openTeamSheet()" title="Team">&#128101;</button>
+      <button class="hdr-icon-btn" id="new-job-btn" onclick="openNewJobScreen()" title="New Job">&#65291;</button>
+      <div class="user-chip">
+        <span id="user-name"></span>
+        <button onclick="doLogout()">Sign Out</button>
+      </div>
     </div>
   </div>
   <div id="search-bar">
     <input id="search-input" type="text" placeholder="Search ref, address, tenant, tech...">
+    <select id="assigned-filter" onchange="onAssignedFilterChange()"><option value="">Everyone</option></select>
   </div>
   <div id="tab-bar"></div>
   <div class="pull-indicator" id="pull-indicator">Refreshing...</div>
   <div id="pager"></div>
 </div>
+
+<div id="team-sheet">
+  <div class="sheet-header">
+    <div class="sheet-title">Team</div>
+    <button class="sheet-close" onclick="closeTeamSheet()">&times;</button>
+  </div>
+  <div id="team-list"></div>
+</div>
+<div class="sheet-backdrop" id="team-backdrop" onclick="closeTeamSheet()"></div>
+
+<div id="newjob-screen">
+  <div class="detail-header-bar">
+    <button class="detail-back-btn" onclick="closeNewJobScreen()">&larr;</button>
+    <div class="ht"><div class="title" style="font-size:1.05rem;">New Job</div></div>
+    <button class="save-btn" onclick="submitNewJob()">Create</button>
+  </div>
+  <div id="newjob-body">
+    <div class="info-field"><label>Title *</label><input class="field-input" id="nj-title" placeholder="e.g. Kitchen Ceiling Leak"></div>
+    <div class="info-field"><label>Address *</label><input class="field-input" id="nj-address" placeholder="Full address"></div>
+    <div class="info-field"><label>Ticket ID</label><input class="field-input" id="nj-ticket-id" placeholder="External ticket ID (optional)"></div>
+    <div class="info-field"><label>Tenant</label><input class="field-input" id="nj-tenant" placeholder="Tenant name"></div>
+    <div class="info-field"><label>Tenant Phone</label><input class="field-input" id="nj-tenant-phone" placeholder="Tenant phone"></div>
+    <div class="info-field"><label>Description</label><textarea class="field-input" id="nj-description" rows="4" placeholder="Scope / issue details"></textarea></div>
+    <div class="info-field"><label>Status</label>
+      <select class="field-input" id="nj-status">
+        <option value="active">Active</option>
+        <option value="contacted">Contacted</option>
+        <option value="booked">Booked</option>
+        <option value="revisit">Revisit</option>
+      </select>
+    </div>
+    <div class="info-field"><label>Category</label><input class="field-input" id="nj-category" placeholder="e.g. Plumbing"></div>
+    <div class="info-field checkbox-field"><label><input type="checkbox" id="nj-quote-needed"> This is a quote request, not a job yet</label></div>
+  </div>
+</div>
+<div class="sheet-backdrop" id="newjob-backdrop"></div>
 
 <div id="detail-screen">
   <div id="detail-header">
@@ -42,6 +83,9 @@
       <div class="ref" id="d-ref"></div>
       <div class="title" id="d-title"></div>
     </div>
+    <button class="hdr-icon-btn" id="d-edit-btn" onclick="enterEditMode()" title="Edit">&#9998;</button>
+    <button class="save-btn" id="d-save-btn" style="display:none;" onclick="saveJobEdits()">Save</button>
+    <button class="hdr-icon-btn" id="d-cancel-btn" style="display:none;" onclick="cancelEditMode()" title="Cancel">&times;</button>
   </div>
   <div id="detail-tabs">
     <button class="detail-tab-btn active" data-tab="info" onclick="switchDetailTab('info')">Info</button>
@@ -61,6 +105,8 @@
     <button class="icon-btn send" onclick="postComment()">&#10148;</button>
   </div>
 </div>
+
+<datalist id="tech-names-list"></datalist>
 
 <div class="toast" id="toast"></div>
 

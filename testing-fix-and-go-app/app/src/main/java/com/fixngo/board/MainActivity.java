@@ -50,6 +50,12 @@ public class MainActivity extends Activity {
         s.setAllowFileAccess(true);
         s.setMediaPlaybackRequiresUserGesture(false);
 
+        // Android's default overscroll glow paints a translucent arc at the edge being
+        // overscrolled. With a horizontally-swiping pager sitting right below a fixed
+        // header, a diagonal thumb movement can trigger that glow at the top edge and
+        // it visually smears across the header during the swipe. Not needed here.
+        web.setOverScrollMode(android.view.View.OVER_SCROLL_NEVER);
+
         web.setWebChromeClient(new WebChromeClient()); // lets <input type=file capture> open the camera
         web.setWebViewClient(new WebViewClient() {
             @Override

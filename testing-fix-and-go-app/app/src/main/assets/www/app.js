@@ -16,6 +16,16 @@ let currentDetailId = null;
 let activeTabIndex = 0;
 let pendingPhoto = null;
 let detailOpenedFromColumn = null;
+let teamMembers = [];
+let technicians = [];
+let activeAssignedFilter = '';
+let editMode = false;
+
+function can(permKey){
+  if(!CURRENT_USER) return false;
+  if(CURRENT_USER.role === 'admin') return true;
+  return !!(CURRENT_USER.permissions && CURRENT_USER.permissions[permKey]);
+}
 
 const COLUMNS = [
   {
@@ -122,7 +132,15 @@ async function boot(){
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.add('visible');
   document.getElementById('user-name').textContent = profile.name + (profile.role === 'admin' ? ' (Admin)' : '');
-  await fetchAllJobs();
+  applyRoleUI();
+  await Promise.all([fetchAllJobs(), fetchTeamAndTechnicians()]);
+}
+
+function applyRoleUI(){
+  const isAdmin = CURRENT_USER.role === 'admin';
+  // Employees only ever see their own jobs - team/filter/add-job are admin surfaces.
+  document.getElementById('team-btn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('new-job-btn').style.display = isAdmin ? '' : 'none';
 }
 
 /* ===== DATA ===== */
@@ -131,7 +149,8 @@ async function fetchAllJobs(){
   const { data, error } = await sb.from('jobs').select('*').is('archived_at', null).order('created_at', { ascending: false });
   if(error){ showToast('Failed to load jobs'); return; }
   JOBS = (data || []).map(j => ({
-    id: j.id, ref: j.ref, title: j.title, address: j.address, tenant: j.tenant, tenant_phone: j.tenant_phone,
+    id: j.id, ref: j.ref, title: j.title, address: j.address, external_job_id: j.external_job_id,
+    tenant: j.tenant, tenant_phone: j.tenant_phone,
     description: j.description, status: j.status, scheduled_at: j.scheduled_at, tech: j.tech, tech_phone: j.tech_phone,
     assigned_to: j.assigned_to, budget: j.budget, cost_to_us: j.cost_to_us, invoiced: !!j.invoiced,
     quote_needed: !!j.quote_needed, quoted: !!j.quoted, category: j.category, created: j.created,
@@ -145,12 +164,121 @@ function getVisibleJobs(){
   const q = (document.getElementById('search-input').value || '').toLowerCase().trim();
   return JOBS.filter(j => {
     if(CURRENT_USER.role !== 'admin' && (j.assigned_to||'').trim().toLowerCase() !== CURRENT_USER.name.trim().toLowerCase()) return false;
+    if(activeAssignedFilter && (j.assigned_to||'') !== activeAssignedFilter) return false;
     if(q){
       const hay = [j.ref, j.address, j.tenant, j.tech, j.assigned_to, j.title, j.description].filter(Boolean).join(' ').toLowerCase();
       if(!hay.includes(q)) return false;
     }
     return true;
   });
+}
+
+function onAssignedFilterChange(){
+  activeAssignedFilter = document.getElementById('assigned-filter').value;
+  renderTabs();
+  renderPager();
+}
+
+/* ===== TEAM ===== */
+
+async function fetchTeamAndTechnicians(){
+  const [tm, tech] = await Promise.all([
+    sb.from('team_members').select('*').is('archived_at', null).order('name'),
+    sb.from('technicians').select('*').is('archived_at', null).order('name')
+  ]);
+  teamMembers = tm.data || [];
+  technicians = tech.data || [];
+
+  const dl = document.getElementById('tech-names-list');
+  if(dl) dl.innerHTML = technicians.map(t => `<option value="${escHtml(t.name)}">`).join('');
+
+  const filterSel = document.getElementById('assigned-filter');
+  if(filterSel && CURRENT_USER.role === 'admin'){
+    const current = filterSel.value;
+    filterSel.innerHTML = '<option value="">Everyone</option>' +
+      teamMembers.map(t => `<option value="${escHtml(t.name)}">${escHtml(t.name)}</option>`).join('');
+    filterSel.value = current;
+    filterSel.classList.add('visible');
+  }
+}
+
+function openTeamSheet(){
+  const list = document.getElementById('team-list');
+  const allCount = getVisibleJobsIgnoringAssignedFilter().length;
+  let html = `<div class="team-row-all" onclick="filterByTeamMember('')">All Team (${allCount})</div>`;
+  html += teamMembers.map(t => {
+    const count = getVisibleJobsIgnoringAssignedFilter().filter(j => (j.assigned_to||'') === t.name).length;
+    const active = activeAssignedFilter === t.name;
+    return `
+      <div class="team-row ${active?'active':''}" onclick="filterByTeamMember('${escHtml(t.name)}')">
+        <div>
+          <div class="tr-name">${escHtml(t.name)}</div>
+          ${t.phone ? `<div class="tr-phone">${escHtml(t.phone)}</div>` : ''}
+        </div>
+        <div class="tr-count">${count}</div>
+      </div>`;
+  }).join('');
+  if(!teamMembers.length) html += `<div class="empty-state">No team members added yet</div>`;
+  list.innerHTML = html;
+  document.getElementById('team-sheet').classList.add('open');
+  document.getElementById('team-backdrop').classList.add('show');
+}
+function closeTeamSheet(){
+  document.getElementById('team-sheet').classList.remove('open');
+  document.getElementById('team-backdrop').classList.remove('show');
+}
+function getVisibleJobsIgnoringAssignedFilter(){
+  const saved = activeAssignedFilter;
+  activeAssignedFilter = '';
+  const jobs = getVisibleJobs();
+  activeAssignedFilter = saved;
+  return jobs;
+}
+function filterByTeamMember(name){
+  activeAssignedFilter = name;
+  document.getElementById('assigned-filter').value = name;
+  closeTeamSheet();
+  renderTabs();
+  renderPager();
+}
+
+/* ===== NEW JOB ===== */
+
+function openNewJobScreen(){
+  ['nj-title','nj-address','nj-ticket-id','nj-tenant','nj-tenant-phone','nj-description','nj-category'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('nj-status').value = 'active';
+  document.getElementById('nj-quote-needed').checked = false;
+  document.getElementById('newjob-screen').classList.add('open');
+}
+function closeNewJobScreen(){
+  document.getElementById('newjob-screen').classList.remove('open');
+}
+async function submitNewJob(){
+  const title = document.getElementById('nj-title').value.trim();
+  const address = document.getElementById('nj-address').value.trim();
+  if(!title || !address){ showToast('Please enter at least a title and address'); return; }
+
+  const newJob = {
+    title, address,
+    external_job_id: document.getElementById('nj-ticket-id').value.trim() || null,
+    tenant: document.getElementById('nj-tenant').value.trim() || 'Not provided',
+    tenant_phone: document.getElementById('nj-tenant-phone').value.trim() || null,
+    description: document.getElementById('nj-description').value.trim() || null,
+    status: document.getElementById('nj-status').value,
+    priority: 'normal',
+    category: document.getElementById('nj-category').value.trim() || null,
+    quote_needed: document.getElementById('nj-quote-needed').checked,
+    created: new Date().toISOString().split('T')[0]
+  };
+
+  const { error } = await sb.from('jobs').insert([newJob]);
+  if(error){ showToast('Failed to create job: ' + error.message); return; }
+
+  closeNewJobScreen();
+  showToast('Job created');
+  await fetchAllJobs();
 }
 
 /* ===== TABS + PAGER ===== */
@@ -174,6 +302,9 @@ function goToTab(i){
 function renderPager(){
   const visible = getVisibleJobs();
   const pager = document.getElementById('pager');
+  // Rebuilding innerHTML resets scrollLeft to 0, which would yank the user back
+  // to the first tab mid-swipe whenever a refresh happens to land at the same
+  // moment. Keep the currently active tab in view across the rebuild.
   pager.innerHTML = COLUMNS.map((col, idx) => {
     const jobs = visible.filter(col.filter);
     const cards = jobs.map(j => {
@@ -200,6 +331,9 @@ function renderPager(){
     return `<div class="page" data-idx="${idx}" ontouchstart="onPageTouchStart(event)" ontouchmove="onPageTouchMove(event)" ontouchend="onPageTouchEnd(event)">${cards}</div>`;
   }).join('');
   pager.onscroll = onPagerScroll;
+  // Restore scroll position to the active tab without animating - this runs
+  // after every data refresh, not just on first load, so it must be instant.
+  pager.scrollLeft = activeTabIndex * pager.clientWidth;
 }
 
 let pagerScrollTimer = null;
@@ -220,34 +354,70 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-/* ===== PULL TO REFRESH ===== */
+/* ===== PULL TO REFRESH =====
+   Lives alongside the horizontally-swiping pager, so every gesture must be
+   axis-locked: a diagonal thumb movement must not let a stray vertical delta
+   trigger (or leave stuck) the pull indicator while the pager is actually
+   being swiped sideways. State is always reset on touchstart/touchend so a
+   gesture that bails out early (e.g. scrollTop was > 0, or the axis turned
+   out to be horizontal) never leaves the indicator showing. */
 
-let pullStartY = null, pullActive = false, isRefreshing = false;
+let pullStartX = null, pullStartY = null, pullActive = null, pullAxisLocked = false, isRefreshing = false;
+
+function resetPullIndicator(){
+  document.getElementById('pull-indicator').classList.remove('show');
+}
+
 function onPageTouchStart(e){
+  resetPullIndicator();
+  pullAxisLocked = false;
   const page = e.currentTarget;
-  if(page.scrollTop <= 0){ pullStartY = e.touches[0].clientY; pullActive = true; } else { pullActive = false; }
+  const t = e.touches[0];
+  pullStartX = t.clientX;
+  pullStartY = t.clientY;
+  pullActive = (page.scrollTop <= 0) && !isRefreshing;
 }
 function onPageTouchMove(e){
   if(!pullActive || isRefreshing) return;
-  const dy = e.touches[0].clientY - pullStartY;
-  if(dy > 0){
-    const ind = document.getElementById('pull-indicator');
-    ind.classList.toggle('show', dy > 30);
+  const t = e.touches[0];
+  const dx = t.clientX - pullStartX;
+  const dy = t.clientY - pullStartY;
+
+  if(!pullAxisLocked){
+    // Wait until the gesture is clearly one direction or the other before acting.
+    if(Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+    pullAxisLocked = true;
+    if(Math.abs(dx) >= Math.abs(dy)){
+      // Horizontal swipe - this is the pager's gesture, not ours. Stand down.
+      pullActive = false;
+      resetPullIndicator();
+      return;
+    }
   }
+
+  const ind = document.getElementById('pull-indicator');
+  ind.classList.toggle('show', dy > 30);
 }
 async function onPageTouchEnd(e){
-  if(!pullActive || isRefreshing) return;
-  const dy = (e.changedTouches[0].clientY - pullStartY);
   const ind = document.getElementById('pull-indicator');
-  if(dy > 70){
+  if(!pullActive || isRefreshing){ pullActive = false; resetPullIndicator(); return; }
+
+  const dy = (e.changedTouches[0].clientY - pullStartY);
+  pullActive = false;
+
+  if(pullAxisLocked && dy > 70){
     isRefreshing = true;
     ind.classList.add('show');
     ind.textContent = 'Refreshing...';
-    await fetchAllJobs();
-    isRefreshing = false;
+    try {
+      await fetchAllJobs();
+    } finally {
+      isRefreshing = false;
+      resetPullIndicator();
+    }
+  } else {
+    resetPullIndicator();
   }
-  ind.classList.remove('show');
-  pullActive = false;
 }
 
 /* ===== DETAIL SCREEN ===== */
@@ -259,15 +429,26 @@ function openDetail(jobId, columnKey){
   if(!j) return;
   currentDetailId = jobId;
   detailOpenedFromColumn = columnKey;
+  editMode = false;
 
   document.getElementById('d-ref').textContent = j.ref;
   document.getElementById('d-title').textContent = j.title || 'Untitled Job';
+  document.getElementById('d-edit-btn').style.display = '';
+  document.getElementById('d-save-btn').style.display = 'none';
+  document.getElementById('d-cancel-btn').style.display = 'none';
 
+  renderInfoView(j, columnKey);
+  switchDetailTab('info');
+  loadComments(jobId);
+  document.getElementById('detail-screen').classList.add('open');
+}
+
+function renderInfoView(j, columnKey){
   const tenantCall = telLink(j.tenant_phone);
   const techCall = telLink(j.tech_phone);
+  const isAdmin = CURRENT_USER.role === 'admin';
 
   let actionBoxHtml = '';
-  const isAdmin = CURRENT_USER.role === 'admin';
   if(j.quote_needed){
     if(!j.quoted){
       actionBoxHtml += `<div class="action-box purple"><p>Quote needed - have you sent it yet?</p><button style="background:#7c3aed;" onclick="markQuoted()">Mark as Quoted</button></div>`;
@@ -293,24 +474,153 @@ function openDetail(jobId, columnKey){
     ${actionBoxHtml}
     <div class="info-field"><label>Status</label><div class="val"><span class="status-pill status-${j.status}">${escHtml(j.status)}</span></div></div>
     <div class="info-field"><label>Address</label><div class="val">${escHtml(j.address || '—')}</div></div>
+    <div class="info-field"><label>Ticket ID</label><div class="val">${escHtml(j.external_job_id || '—')}</div></div>
+    <div class="info-field"><label>Tenant</label><div class="val">${escHtml(j.tenant || '—')}${j.tenant_phone ? ' · '+escHtml(j.tenant_phone) : ''}</div></div>
     <div class="info-field"><label>Description</label><div class="val">${escHtml(j.description || '—')}</div></div>
     <div class="info-field"><label>Appointment</label><div class="val">${j.scheduled_at ? formatShortDate(j.scheduled_at) : 'Not set'}</div></div>
+    <div class="info-field"><label>Technician</label><div class="val">${escHtml(j.tech || '—')}${j.tech_phone ? ' · '+escHtml(j.tech_phone) : ''}</div></div>
     <div class="info-field"><label>Assigned To</label><div class="val">${escHtml(j.assigned_to || 'Unassigned')}</div></div>
     <div class="info-field"><label>Category</label><div class="val">${escHtml(j.category || '—')}</div></div>
     ${isAdmin ? `
     <div class="info-field"><label>Budget</label><div class="val">${j.budget != null ? '£'+Number(j.budget).toFixed(2) : '—'}</div></div>
     <div class="info-field"><label>Cost to Us</label><div class="val">${j.cost_to_us != null ? '£'+Number(j.cost_to_us).toFixed(2) : '—'}</div></div>
+    <div class="info-field"><label>Invoiced</label><div class="val">${j.invoiced ? 'Yes' : 'No'}</div></div>
     ` : ''}
+    ${can('can_delete_jobs') ? `<button id="delete-job-btn" style="width:100%;padding:12px;border-radius:9px;border:1px solid #fecaca;background:#fef2f2;color:var(--red);font-weight:700;margin-top:10px;" onclick="deleteJob()">Delete Job</button>` : ''}
   `;
+}
 
-  switchDetailTab('info');
-  loadComments(jobId);
-  document.getElementById('detail-screen').classList.add('open');
+function renderInfoEdit(j){
+  const isAdmin = CURRENT_USER.role === 'admin';
+  const lockIdentity = !isAdmin; // title/address/ticket id/cost-to-us are locked for non-admins
+  const canReassign = can('can_reassign_jobs');
+
+  const assignedOptions = ['<option value="">Unassigned</option>'].concat(
+    teamMembers.map(t => `<option value="${escHtml(t.name)}" ${j.assigned_to===t.name?'selected':''}>${escHtml(t.name)}</option>`)
+  ).join('');
+
+  document.getElementById('panel-info').innerHTML = `
+    <div class="info-field"><label>Title</label><input class="field-input" id="d-title-input" value="${escHtml(j.title||'')}" ${lockIdentity?'readonly':''}></div>
+    <div class="info-field"><label>Address</label><input class="field-input" id="d-address-input" value="${escHtml(j.address||'')}" ${lockIdentity?'readonly':''}></div>
+    <div class="info-field"><label>Ticket ID</label><input class="field-input" id="d-ticket-id-input" value="${escHtml(j.external_job_id||'')}" ${lockIdentity?'readonly':''}></div>
+    <div class="info-field"><label>Tenant</label><input class="field-input" id="d-tenant-input" value="${escHtml(j.tenant||'')}"></div>
+    <div class="info-field"><label>Tenant Phone</label><input class="field-input" id="d-tenant-phone-input" value="${escHtml(j.tenant_phone||'')}"></div>
+    <div class="info-field"><label>Description</label><textarea class="field-input" id="d-desc-input" rows="4">${escHtml(j.description||'')}</textarea></div>
+    <div class="info-field"><label>Status</label>
+      <select class="field-input" id="d-status-input">
+        ${['active','contacted','booked','completed','revisit','cancelled'].map(s => `<option value="${s}" ${j.status===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="info-field"><label>Appointment Date</label><input class="field-input" type="date" id="d-scheduled-input" value="${j.scheduled_at ? j.scheduled_at.split('T')[0] : ''}"></div>
+    <div class="info-field"><label>Technician</label><input class="field-input" id="d-tech-input" list="tech-names-list" value="${escHtml(j.tech||'')}" placeholder="Start typing a technician name..."></div>
+    <div class="info-field"><label>Technician Phone</label><input class="field-input" id="d-tech-phone-input" value="${escHtml(j.tech_phone||'')}"></div>
+    <div class="info-field" id="d-assigned-wrap">
+      ${canReassign
+        ? `<label>Assigned To (Team)</label><select class="field-input" id="d-assigned-input">${assignedOptions}</select>`
+        : `<label>Assigned To (Team)</label><div class="val">${escHtml(j.assigned_to || 'Unassigned')}</div>`}
+    </div>
+    <div class="info-field"><label>Category</label><input class="field-input" id="d-category-input" value="${escHtml(j.category||'')}"></div>
+    ${isAdmin ? `
+    <div class="info-field"><label>Budget</label><input class="field-input" type="number" step="0.01" id="d-budget" value="${j.budget != null ? j.budget : ''}"></div>
+    <div class="info-field"><label>Cost to Us</label><input class="field-input" type="number" step="0.01" id="d-cost" value="${j.cost_to_us != null ? j.cost_to_us : ''}"></div>
+    <div class="info-field checkbox-field"><label><input type="checkbox" id="d-invoiced" ${j.invoiced?'checked':''}> Invoiced</label></div>
+    ` : (lockIdentity ? `<input type="hidden" id="d-cost" value="${j.cost_to_us != null ? j.cost_to_us : ''}">` : '')}
+  `;
+}
+
+function enterEditMode(){
+  const j = JOBS.find(x => x.id === currentDetailId);
+  if(!j) return;
+  editMode = true;
+  renderInfoEdit(j);
+  document.getElementById('d-edit-btn').style.display = 'none';
+  document.getElementById('d-save-btn').style.display = '';
+  document.getElementById('d-cancel-btn').style.display = '';
+}
+
+function cancelEditMode(){
+  const j = JOBS.find(x => x.id === currentDetailId);
+  if(!j) return;
+  editMode = false;
+  renderInfoView(j, detailOpenedFromColumn);
+  document.getElementById('d-edit-btn').style.display = '';
+  document.getElementById('d-save-btn').style.display = 'none';
+  document.getElementById('d-cancel-btn').style.display = 'none';
+}
+
+async function saveJobEdits(){
+  if(!currentDetailId) return;
+  const scheduledVal = document.getElementById('d-scheduled-input').value;
+  const budgetEl = document.getElementById('d-budget');
+  const costEl = document.getElementById('d-cost');
+  const invoicedEl = document.getElementById('d-invoiced');
+
+  const updates = {
+    title: document.getElementById('d-title-input').value.trim() || 'Untitled Job',
+    address: document.getElementById('d-address-input').value.trim(),
+    external_job_id: document.getElementById('d-ticket-id-input').value.trim() || null,
+    tenant: document.getElementById('d-tenant-input').value.trim() || null,
+    tenant_phone: document.getElementById('d-tenant-phone-input').value.trim() || null,
+    description: document.getElementById('d-desc-input').value.trim() || null,
+    status: document.getElementById('d-status-input').value,
+    scheduled_at: scheduledVal || null,
+    tech: document.getElementById('d-tech-input').value.trim() || null,
+    tech_phone: document.getElementById('d-tech-phone-input').value.trim() || null,
+    category: document.getElementById('d-category-input').value.trim() || null
+  };
+  if(budgetEl) updates.budget = budgetEl.value !== '' ? parseFloat(budgetEl.value) : 200;
+  if(costEl) updates.cost_to_us = costEl.value !== '' ? parseFloat(costEl.value) : null;
+  if(invoicedEl) updates.invoiced = invoicedEl.checked;
+
+  const assignSel = document.getElementById('d-assigned-input');
+  if(assignSel) updates.assigned_to = assignSel.value.trim() || null;
+
+  const { error } = await sb.from('jobs').update(updates).eq('id', currentDetailId);
+  if(error){ showToast('Failed to save: ' + error.message); return; }
+
+  await autoAddTechnicianIfNew(updates.tech, updates.tech_phone);
+
+  const j = JOBS.find(x => x.id === currentDetailId);
+  if(j) Object.assign(j, updates);
+
+  editMode = false;
+  showToast('Saved');
+  document.getElementById('d-title').textContent = updates.title;
+  document.getElementById('d-edit-btn').style.display = '';
+  document.getElementById('d-save-btn').style.display = 'none';
+  document.getElementById('d-cancel-btn').style.display = 'none';
+  renderInfoView(j, detailOpenedFromColumn);
+  renderTabs();
+  renderPager();
+}
+
+async function autoAddTechnicianIfNew(techName, techPhone){
+  if(!techName) return;
+  const alreadyExists = technicians.some(t => (t.name || '').trim().toLowerCase() === techName.trim().toLowerCase());
+  if(alreadyExists) return;
+  const { error } = await sb.from('technicians').insert([{ name: techName, phone: techPhone || null }]);
+  if(error){ console.error('Failed to auto-add technician:', error.message); return; }
+  await fetchTeamAndTechnicians();
+}
+
+async function deleteJob(){
+  if(!currentDetailId) return;
+  if(!can('can_delete_jobs')){ showToast('You do not have permission to delete jobs'); return; }
+  if(!confirm('Delete this job? It will be archived, not permanently erased, and will disappear from the board.')) return;
+
+  const { error } = await sb.from('jobs').update({ archived_at: new Date().toISOString() }).eq('id', currentDetailId);
+  if(error){ showToast('Failed to delete: ' + error.message); return; }
+
+  JOBS = JOBS.filter(j => j.id !== currentDetailId);
+  closeDetail();
+  renderTabs();
+  renderPager();
 }
 
 function closeDetail(){
   document.getElementById('detail-screen').classList.remove('open');
   currentDetailId = null;
+  editMode = false;
   pendingPhoto = null;
   renderPhotoPreview();
 }
@@ -323,7 +633,16 @@ function switchDetailTab(tab){
 }
 
 window.onBack = function(){
+  if(document.getElementById('newjob-screen').classList.contains('open')){
+    closeNewJobScreen();
+    return 'false';
+  }
+  if(document.getElementById('team-sheet').classList.contains('open')){
+    closeTeamSheet();
+    return 'false';
+  }
   if(document.getElementById('detail-screen').classList.contains('open')){
+    if(editMode){ cancelEditMode(); return 'false'; }
     closeDetail();
     return 'false';
   }
