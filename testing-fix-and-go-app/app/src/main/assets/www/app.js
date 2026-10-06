@@ -19,6 +19,7 @@ let detailOpenedFromColumn = null;
 let teamMembers = [];
 let technicians = [];
 let activeAssignedFilter = '';
+let activeTechFilter = '';
 let editMode = false;
 
 function can(permKey){
@@ -131,7 +132,10 @@ async function boot(){
   CURRENT_USER = profile;
   document.getElementById('login-screen').classList.add('hidden');
   document.getElementById('app').classList.add('visible');
-  document.getElementById('user-name').textContent = profile.name + (profile.role === 'admin' ? ' (Admin)' : '');
+  const nm = profile.name || '';
+  document.getElementById('sb-name').textContent = nm;
+  document.getElementById('sb-role').textContent = profile.role === 'admin' ? 'Admin' : 'Team member';
+  document.getElementById('sb-avatar').textContent = (nm.trim().split(/\s+/).map(w => w[0]).join('').slice(0,2) || '?').toUpperCase();
   applyRoleUI();
   await Promise.all([fetchAllJobs(), fetchTeamAndTechnicians()]);
 }
@@ -139,8 +143,33 @@ async function boot(){
 function applyRoleUI(){
   const isAdmin = CURRENT_USER.role === 'admin';
   // Employees only ever see their own jobs - team/filter/add-job are admin surfaces.
-  document.getElementById('team-btn').style.display = isAdmin ? '' : 'none';
-  document.getElementById('new-job-btn').style.display = isAdmin ? '' : 'none';
+  ['sb-newjob','sb-team','sb-tech','sb-people-label'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.style.display = isAdmin ? '' : 'none';
+  });
+  document.getElementById('filter-btn').style.display = isAdmin ? '' : 'none';
+}
+
+/* ===== SIDEBAR ===== */
+
+function openSidebar(){
+  document.getElementById('sidebar').classList.add('open');
+  document.getElementById('sidebar-backdrop').classList.add('show');
+}
+function closeSidebar(){
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-backdrop').classList.remove('show');
+}
+async function sbAction(what){
+  closeSidebar();
+  if(what === 'newjob') openNewJobScreen();
+  else if(what === 'team') openTeamSheet('team');
+  else if(what === 'tech') openTeamSheet('tech');
+  else if(what === 'refresh'){
+    showToast('Updating...');
+    await Promise.all([fetchAllJobs(), fetchTeamAndTechnicians()]);
+    showToast('Up to date');
+  }
 }
 
 /* ===== DATA ===== */
@@ -165,6 +194,7 @@ function getVisibleJobs(){
   return JOBS.filter(j => {
     if(CURRENT_USER.role !== 'admin' && (j.assigned_to||'').trim().toLowerCase() !== CURRENT_USER.name.trim().toLowerCase()) return false;
     if(activeAssignedFilter && (j.assigned_to||'') !== activeAssignedFilter) return false;
+    if(activeTechFilter && (j.tech||'').trim().toLowerCase() !== activeTechFilter.trim().toLowerCase()) return false;
     if(q){
       const hay = [j.ref, j.address, j.tenant, j.tech, j.assigned_to, j.title, j.description].filter(Boolean).join(' ').toLowerCase();
       if(!hay.includes(q)) return false;
@@ -173,8 +203,12 @@ function getVisibleJobs(){
   });
 }
 
-function onAssignedFilterChange(){
-  activeAssignedFilter = document.getElementById('assigned-filter').value;
+function updateFilterDot(){
+  const dot = document.getElementById('filter-dot');
+  if(dot) dot.classList.toggle('on', !!(activeAssignedFilter || activeTechFilter));
+}
+function applyFilters(){
+  updateFilterDot();
   renderTabs();
   renderPager();
 }
@@ -191,55 +225,74 @@ async function fetchTeamAndTechnicians(){
 
   const dl = document.getElementById('tech-names-list');
   if(dl) dl.innerHTML = technicians.map(t => `<option value="${escHtml(t.name)}">`).join('');
-
-  const filterSel = document.getElementById('assigned-filter');
-  if(filterSel && CURRENT_USER.role === 'admin'){
-    const current = filterSel.value;
-    filterSel.innerHTML = '<option value="">Everyone</option>' +
-      teamMembers.map(t => `<option value="${escHtml(t.name)}">${escHtml(t.name)}</option>`).join('');
-    filterSel.value = current;
-    filterSel.classList.add('visible');
-  }
 }
 
-function openTeamSheet(){
+function countFor(kind, name){
+  const jobs = getVisibleJobsIgnoringFilters();
+  const n = (name||'').trim().toLowerCase();
+  return jobs.filter(j => ((kind === 'team' ? j.assigned_to : j.tech)||'').trim().toLowerCase() === n).length;
+}
+function getVisibleJobsIgnoringFilters(){
+  const a = activeAssignedFilter, t = activeTechFilter;
+  activeAssignedFilter = ''; activeTechFilter = '';
+  const jobs = getVisibleJobs();
+  activeAssignedFilter = a; activeTechFilter = t;
+  return jobs;
+}
+function personRow(kind, p){
+  const active = kind === 'team' ? activeAssignedFilter === p.name : activeTechFilter === p.name;
+  const phone = p.phone ? `<a class="tr-phone" href="${telLink(p.phone)}" onclick="event.stopPropagation()">${escHtml(p.phone)}</a>` : '';
+  return `
+    <div class="team-row ${active?'active':''}" onclick="pickPerson('${kind}','${escHtml(p.name).replace(/'/g,"\\'")}')">
+      <div>
+        <div class="tr-name">${escHtml(p.name)}</div>
+        ${phone}
+      </div>
+      <div class="tr-count">${countFor(kind, p.name)}</div>
+    </div>`;
+}
+function openTeamSheet(mode){
+  mode = mode || 'team';
   const list = document.getElementById('team-list');
-  const allCount = getVisibleJobsIgnoringAssignedFilter().length;
-  let html = `<div class="team-row-all" onclick="filterByTeamMember('')">All Team (${allCount})</div>`;
-  html += teamMembers.map(t => {
-    const count = getVisibleJobsIgnoringAssignedFilter().filter(j => (j.assigned_to||'') === t.name).length;
-    const active = activeAssignedFilter === t.name;
-    return `
-      <div class="team-row ${active?'active':''}" onclick="filterByTeamMember('${escHtml(t.name)}')">
-        <div>
-          <div class="tr-name">${escHtml(t.name)}</div>
-          ${t.phone ? `<div class="tr-phone">${escHtml(t.phone)}</div>` : ''}
-        </div>
-        <div class="tr-count">${count}</div>
-      </div>`;
-  }).join('');
-  if(!teamMembers.length) html += `<div class="empty-state">No team members added yet</div>`;
+  let html = '';
+  if(mode === 'filter'){
+    document.getElementById('sheet-title').textContent = 'Filter';
+    html += `<div class="sheet-section">Team member</div>`;
+    html += `<div class="team-row-all" onclick="pickPerson('team','')">Everyone (${getVisibleJobsIgnoringFilters().length})</div>`;
+    html += teamMembers.map(t => personRow('team', t)).join('');
+    html += `<div class="sheet-section">Technician</div>`;
+    html += `<div class="team-row-all" onclick="pickPerson('tech','')">All technicians</div>`;
+    html += technicians.map(t => personRow('tech', t)).join('');
+    if(activeAssignedFilter || activeTechFilter) html += `<button class="clear-filters" onclick="clearFilters()">Clear filters</button>`;
+  } else if(mode === 'tech'){
+    document.getElementById('sheet-title').textContent = 'Technicians';
+    html += `<div class="team-row-all" onclick="pickPerson('tech','')">All technicians</div>`;
+    html += technicians.map(t => personRow('tech', t)).join('');
+    if(!technicians.length) html += `<div class="empty-state">No technicians added yet</div>`;
+  } else {
+    document.getElementById('sheet-title').textContent = 'Team';
+    html += `<div class="team-row-all" onclick="pickPerson('team','')">Everyone (${getVisibleJobsIgnoringFilters().length})</div>`;
+    html += teamMembers.map(t => personRow('team', t)).join('');
+    if(!teamMembers.length) html += `<div class="empty-state">No team members added yet</div>`;
+  }
   list.innerHTML = html;
   document.getElementById('team-sheet').classList.add('open');
   document.getElementById('team-backdrop').classList.add('show');
 }
+function openFilterSheet(){ openTeamSheet('filter'); }
 function closeTeamSheet(){
   document.getElementById('team-sheet').classList.remove('open');
   document.getElementById('team-backdrop').classList.remove('show');
 }
-function getVisibleJobsIgnoringAssignedFilter(){
-  const saved = activeAssignedFilter;
-  activeAssignedFilter = '';
-  const jobs = getVisibleJobs();
-  activeAssignedFilter = saved;
-  return jobs;
-}
-function filterByTeamMember(name){
-  activeAssignedFilter = name;
-  document.getElementById('assigned-filter').value = name;
+function pickPerson(kind, name){
+  if(kind === 'team') activeAssignedFilter = name; else activeTechFilter = name;
   closeTeamSheet();
-  renderTabs();
-  renderPager();
+  applyFilters();
+}
+function clearFilters(){
+  activeAssignedFilter = ''; activeTechFilter = '';
+  closeTeamSheet();
+  applyFilters();
 }
 
 /* ===== NEW JOB ===== */

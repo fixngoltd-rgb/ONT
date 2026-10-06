@@ -21,28 +21,55 @@
 
 <div id="app">
   <div id="top-header">
+    <button class="menu-btn" id="menu-btn" onclick="openSidebar()" aria-label="Menu">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+    </button>
     <div class="title">FIX AND GO<span> BOARD</span></div>
-    <div class="header-actions">
-      <button class="hdr-icon-btn" id="team-btn" onclick="openTeamSheet()" title="Team">&#128101;</button>
-      <button class="hdr-icon-btn" id="new-job-btn" onclick="openNewJobScreen()" title="New Job">&#65291;</button>
-      <div class="user-chip">
-        <span id="user-name"></span>
-        <button onclick="doLogout()">Sign Out</button>
-      </div>
-    </div>
   </div>
   <div id="search-bar">
     <input id="search-input" type="text" placeholder="Search ref, address, tenant, tech...">
-    <select id="assigned-filter" onchange="onAssignedFilterChange()"><option value="">Everyone</option></select>
+    <button id="filter-btn" class="filter-btn" onclick="openFilterSheet()" aria-label="Filter" style="display:none;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8.5V19l-4 2v-7.5z"/></svg>
+      <span class="filter-dot" id="filter-dot"></span>
+    </button>
   </div>
   <div id="tab-bar"></div>
   <div class="pull-indicator" id="pull-indicator">Refreshing...</div>
   <div id="pager"></div>
 </div>
 
+<div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeSidebar()"></div>
+<aside id="sidebar">
+  <div class="sb-profile">
+    <div class="sb-avatar" id="sb-avatar"></div>
+    <div class="sb-name" id="sb-name"></div>
+    <div class="sb-role" id="sb-role"></div>
+  </div>
+  <nav class="sb-nav">
+    <button class="sb-item sb-primary" id="sb-newjob" onclick="sbAction('newjob')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span>New Job</span>
+    </button>
+    <button class="sb-item" onclick="sbAction('refresh')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg><span>Update</span>
+    </button>
+    <div class="sb-label" id="sb-people-label">People</div>
+    <button class="sb-item" id="sb-team" onclick="sbAction('team')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5M16 5.2a3.2 3.2 0 0 1 0 5.6M18 14.8c2 .6 3.5 2.4 3.5 5.2"/></svg><span>Team</span>
+    </button>
+    <button class="sb-item" id="sb-tech" onclick="sbAction('tech')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/></svg><span>Technicians</span>
+    </button>
+  </nav>
+  <div class="sb-bottom">
+    <button class="sb-item sb-signout" onclick="doLogout()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H5v16h4M16 8l4 4-4 4M20 12H9"/></svg><span>Sign Out</span>
+    </button>
+  </div>
+</aside>
+
 <div id="team-sheet">
   <div class="sheet-header">
-    <div class="sheet-title">Team</div>
+    <div class="sheet-title" id="sheet-title">Team</div>
     <button class="sheet-close" onclick="closeTeamSheet()">&times;</button>
   </div>
   <div id="team-list"></div>
