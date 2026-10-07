@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '21';
+const UI_VER = '22';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -279,7 +279,8 @@ async function readOptical() {
     try {
       const r = await api('GET', p);
       if (r.status !== 200) continue;
-      const o = parseObjs(r.body).find((x) => /optic/i.test(x.type));
+      const all = parseObjs(r.body).filter((x) => /optic/i.test(x.type) && !/OLT/i.test(x.type));
+      const o = all.find((x) => x.type === 'stOpticInfo') || all[0];
       if (!o) continue;
       setPref('opticPath', p);
       const nums = o.f.filter((x) => !/^InternetGatewayDevice/.test(x)).map((x) => ({ raw: x, n: parseFloat(x) })).filter((x) => isFinite(x.n));
