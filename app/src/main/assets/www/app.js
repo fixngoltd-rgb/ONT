@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '20';
+const UI_VER = '21';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -339,8 +339,8 @@ views.home = async function (alive) {
       '<div style="display:flex;justify-content:space-between;align-items:baseline"><div style="font-size:34px;font-weight:700;letter-spacing:-.03em">' + esc(opt.rx.raw) + ' <span style="font-size:15px;color:var(--mut);font-weight:500">dBm</span></div><span class="chip ' + vc + '" style="margin:0">' + vt + '</span></div>' +
       '<div class="bar"><i style="width:' + pct + '%;background:var(--' + (vc === 'ok' ? 'ok' : vc === 'warn' ? 'warn' : 'bad') + ')"></i></div>' +
       '<div class="sm">Received power. Between −8 and −25 is healthy.</div>' +
-      (opt.tx ? '<div class="kv" style="margin-top:12px"><span>Transmit</span><span>' + esc(opt.tx.raw) + '</span></div>' : '') +
-      opt.others.map((x, i) => '<div class="kv"><span>Reading ' + (i + 3) + '</span><span>' + esc(x.raw) + '</span></div>').join('') +
+      (opt.tx ? '<div class="kv" style="margin-top:12px"><span>Transmit power</span><span>' + esc(opt.tx.raw.trim()) + ' dBm</span></div>' : '') +
+      opt.others.slice(0, 3).map((x, i) => '<div class="kv"><span>' + ['Voltage', 'Temperature', 'Bias current'][i] + '</span><span>' + esc(x.raw.trim()) + ' ' + ['mV', '°C', 'mA'][i] + '</span></div>').join('') +
       (rxs.length > 2 ? '<div style="color:var(--ink)">' + spark(rxs) + '</div><div class="sm">Last ' + rxs.length + ' checks</div>' : '') + '</div>';
   } else {
     optHtml = '<div class="card pad"><h2>Fibre signal</h2><div class="sm">Could not find the optical page on this router. Open More → Scan router pages and send me the result.</div></div>';
@@ -367,6 +367,19 @@ views.home = async function (alive) {
   $('#rb').onclick = restartRouter;
 };
 
+/* ---- DHCP reservations (request names read from the router's own dhcpstatic page) */
+const DS = '/html/bbsp/dhcpstatic/';
+const DSF = 'RequestFile=html/bbsp/dhcpstatic/dhcpstatic.asp';
+async function loadReserved() {
+  const r = await api('GET', DS + 'dhcpstatic.asp');
+  return parseObjs(r.body).filter((o) => o.type === 'stDhcp' && o.f.some((x) => MAC_RE.test(x))).map((o) => ({
+    domain: o.f.find((x) => /^InternetGatewayDevice\./.test(x)) || '',
+    ip: o.f.find((x) => IP_RE.test(x)) || '', mac: (o.f.find((x) => MAC_RE.test(x)) || '').toLowerCase(),
+  }));
+}
+const reserveIp = (ip, mac) => postForm(DS + 'add.cgi?x=InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress&' + DSF, { 'x.Yiaddr': ip, 'x.Chaddr': mac, 'x.Enable': '1' });
+const unreserve = (domain) => postForm(DS + 'del.cgi?x=InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress&' + DSF, { [domain]: '' });
+
 async function restartRouter() {
   sheet('<h2 style="margin:0 0 6px;font-size:22px">Restart the router?</h2><div class="sm" style="margin-bottom:18px">All devices lose internet for about two minutes.</div>' +
     '<button class="b bad full" id="rbgo">Restart now</button><button class="b ghost full" id="x" style="margin-top:8px">Cancel</button>');
@@ -374,7 +387,7 @@ async function restartRouter() {
   $('#rbgo').onclick = async () => {
     closeSheet();
     try {
-      const r = await postForm('/html/ssmp/devmanage/set.cgi?x=InternetGatewayDevice.X_HW_DEBUG.SMP.DM.ResetBoard&RequestFile=html/ssmp/devmanage/devmanage.asp', { 'x.X_HW_Reset': '1' });
+      const r = await postForm('/html/ssmp/reset/set.cgi?x=InternetGatewayDevice.X_HW_DEBUG.SMP.DM.ResetBoard&RequestFile=html/ssmp/reset/reset.asp', {});
       toast('Sent (HTTP ' + r.status + '). Checking…', 4000);
       await sleep(10000);
       const p = await native('GET', '/', {}, '');
@@ -428,6 +441,7 @@ function deviceSheet(d, isBlocked, dn) {
     (d.mac ? '<label>Nickname (kept on this phone)</label><div class="seg" style="flex-wrap:nowrap"><input class="pv" id="nick" value="' + esc(getNicks()[d.mac.toLowerCase()] || '') + '" placeholder="e.g. Ali\'s iPhone"><button class="b soft" id="nsave">Save</button></div>' : '') +
     (d.mac && !blocked ? '<label>Block for</label><div class="segc" id="dur"><button data-h="0" class="on">Forever</button><button data-h="1">1 h</button><button data-h="2">2 h</button><button data-h="8">8 h</button><button data-h="24">24 h</button></div>' : '') +
     '<div style="height:18px"></div>' +
+    (d.mac && d.ip ? '<button class="b soft full" id="rsv" style="margin-bottom:10px">Always give it ' + PV(d.ip) + '</button>' : '') +
     (d.mac ? (blocked
       ? '<button class="b soft full" id="act">Unblock this device</button>'
       : '<button class="b bad full" id="act">Block this device</button>') : '') +
@@ -442,6 +456,18 @@ function deviceSheet(d, isBlocked, dn) {
     const n = getNicks(); const v = $('#nick').value.trim();
     if (v) n[d.mac.toLowerCase()] = v; else delete n[d.mac.toLowerCase()];
     jset('nicks', n); closeSheet(); toast('Saved'); go('devices');
+  };
+  const rsv = $('#rsv');
+  if (rsv) rsv.onclick = async () => {
+    rsv.disabled = true;
+    try {
+      const have = await loadReserved();
+      if (have.some((x) => x.mac === d.mac.toLowerCase())) { toast('This device already has a reserved IP', 3500); rsv.disabled = false; return; }
+      await reserveIp(d.ip, d.mac); await sleep(1500);
+      const ok = (await loadReserved()).some((x) => x.mac === d.mac.toLowerCase());
+      toast(ok ? 'Reserved. It will keep ' + d.ip : 'The router did not add it', 4500);
+    } catch (e) { toast(e.message); }
+    rsv.disabled = false;
   };
   const act = $('#act');
   if (act) act.onclick = async () => {
@@ -581,7 +607,9 @@ views.tools = async function () {
     '<div class="sec">Add more features</div><div class="card pad"><div class="sm">Opens the router\'s original pages in here and records what each button sends, so I can build it. Passwords are hidden in the log.</div>' +
     '<div style="margin-top:14px"><button class="b soft full" id="cap">' + (canCapture ? 'Record from the old portal' : 'Needs the latest app install') + '</button></div>' +
     '<div style="margin-top:10px"><button class="b soft full" id="scan">Scan router pages</button></div><pre class="pv" id="scanout" hidden></pre><button class="b ghost sm2" id="scancp" hidden>Copy result</button></div>' +
+    '<div class="sec">Reserved IPs</div><div class="card" id="rsvlist"><div class="empty"><span class="spin"></span></div></div>' +
     '<div class="sec">Collect router details</div><div class="card pad"><div class="sm">Reads the router\'s own pages for DHCP, DNS, WAN, guest Wi-Fi, port forwarding and more, and pulls out the request names they use. Takes about a minute. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="col">Collect</button></div><div class="sm" id="colst" style="margin-top:10px"></div><pre class="pv" id="colout" hidden></pre><button class="b ghost sm2" id="colcp" hidden>Copy result</button></div>' +
+    '<div class="sec">DNS report</div><div class="card pad"><div class="sm">Reads the DNS parts of the DHCP and WAN pages so I can build a DNS setting.</div><div style="margin-top:12px"><button class="b soft full" id="dnscol">Collect DNS details</button></div><pre class="pv" id="dnsout" hidden></pre><button class="b ghost sm2" id="dnscp" hidden>Copy result</button></div>' +
     '<div class="sec">Diagnose</div><div class="card pad"><div class="sm">Tries the filter switch several ways and reports which the router accepts.</div><div style="margin-top:12px"><button class="b soft full" id="diag">Run filter diagnose</button></div><pre class="pv" id="diagout" hidden></pre><button class="b ghost sm2" id="diagcp" hidden>Copy result</button></div>' +
     '<div class="card pad"><h2>Raw request</h2>' +
     '<input class="pv" id="rp" value="/html/bbsp/common/GetLanUserDevInfo.asp" autocapitalize="off">' +
@@ -597,6 +625,27 @@ views.tools = async function () {
   $('#save').onclick = () => {
     setPref('host', $('#host').value.trim()); setPref('user', $('#user').value.trim()); setPref('pass', $('#pass').value);
     loggedIn = false; toast('Saved');
+  };
+  loadReserved().then((list) => {
+    const el = $('#rsvlist'); if (!el) return;
+    el.innerHTML = list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + PV(x.ip) + '</div><div class="sm">' + PV(x.mac) + '</div></div><button class="b soft sm2" data-r="' + i + '">Remove</button></div>').join('') : '<div class="empty">None. Open a device and tap "Always give it…"</div>';
+    el.querySelectorAll('button[data-r]').forEach((b) => b.onclick = async () => {
+      if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Sure?'; return; }
+      try { await unreserve(list[+b.dataset.r].domain); toast('Removed'); go('tools'); } catch (e) { toast(e.message); }
+    });
+  }).catch((e) => { const el = $('#rsvlist'); if (el) el.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; });
+  $('#dnscol').onclick = async () => {
+    const b = $('#dnscol'), out = $('#dnsout'); b.disabled = true; out.hidden = false; out.textContent = 'Reading…'; let rep = '';
+    const K = /DNS|dns|Dns|set\.cgi|add\.cgi|addParameter|setAction|urlpara|RequestFile|Form\.|ParaData|\bm=|\bk=/;
+    for (const p of ['/html/bbsp/dhcpservercfg/dhcp2.asp', '/html/bbsp/wan/wan.asp', '/html/bbsp/common/wandns.asp', '/html/bbsp/common/dhcpinfo.asp']) {
+      try {
+        const r = await api('GET', p, BRH); const L = (r.body || '').split(/\r?\n/); const keep = [];
+        L.forEach((l, i) => { if (K.test(l) && !/language\[|\.css/i.test(l)) keep.push((i + 1) + ': ' + l.trim().slice(0, 260)); });
+        rep += '## ' + p + ' [' + r.status + ', ' + (r.body || '').length + ' bytes]\n' + keep.slice(0, 160).join('\n') + '\n\n';
+      } catch (e) { rep += '## ' + p + ' error\n'; }
+      out.textContent = rep;
+    }
+    b.disabled = false; const cp = $('#dnscp'); cp.hidden = false; cp.onclick = () => copyText(rep);
   };
   $('#col').onclick = async () => {
     const b = $('#col'), st = $('#colst'), out = $('#colout'); b.disabled = true; out.hidden = false; out.textContent = '';
