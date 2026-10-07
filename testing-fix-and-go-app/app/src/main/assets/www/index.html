@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>Fix and Go Board</title>
 <link rel="stylesheet" href="style.css">
+<script>try{document.documentElement.setAttribute("data-theme",localStorage.getItem("fg-theme")||"light")}catch(e){}</script>
 <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
 </head>
 <body>
@@ -25,6 +26,7 @@
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
     </button>
     <div class="title">FIX AND GO<span> BOARD</span></div>
+    <div id="uk-clock" title="Current UK time"></div>
   </div>
   <div id="search-bar">
     <input id="search-input" type="text" placeholder="Search ref, address, tenant, tech...">
@@ -49,6 +51,9 @@
     <button class="sb-item sb-primary" id="sb-newjob" onclick="sbAction('newjob')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span>New Job</span>
     </button>
+    <button class="sb-item" id="sb-desk" onclick="sbAction('desk')" style="display:none;">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg><span>Action Desk</span>
+    </button>
     <button class="sb-item" onclick="sbAction('refresh')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg><span>Update</span>
     </button>
@@ -61,6 +66,9 @@
     </button>
   </nav>
   <div class="sb-bottom">
+    <button class="sb-item" onclick="sbAction('theme')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg><span id="theme-label">Dark mode</span>
+    </button>
     <button class="sb-item sb-signout" onclick="doLogout()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4H5v16h4M16 8l4 4-4 4M20 12H9"/></svg><span>Sign Out</span>
     </button>
@@ -130,6 +138,29 @@
     <button class="icon-btn" onclick="document.getElementById('camera-input').click()">📷</button>
     <textarea id="comment-input" placeholder="Write a comment..." rows="1"></textarea>
     <button class="icon-btn send" onclick="postComment()">&#10148;</button>
+  </div>
+</div>
+
+<div id="desk-screen">
+  <div class="detail-header-bar">
+    <button class="detail-back-btn" onclick="closeActionDesk()">&larr;</button>
+    <div class="ht"><div class="title" style="font-size:1.05rem;">Action Desk</div></div>
+  </div>
+  <div id="desk-body"></div>
+</div>
+
+<div id="wr-screen">
+  <div class="detail-header-bar">
+    <button class="detail-back-btn" onclick="closeWorkReport()">&larr;</button>
+    <div class="ht"><div class="title" style="font-size:1.05rem;">Work Report PDF</div><div class="ref" id="wr-addr" style="font-size:0.72rem;color:var(--muted2);font-weight:700;"></div></div>
+  </div>
+  <div id="wr-body">
+    <div class="info-field"><label>Report text (saved on the job)</label>
+      <textarea class="field-input" id="wr-text" rows="14" onblur="saveWorkReportText()" placeholder="No report filed yet. Ask Claude to write it, or type it here."></textarea></div>
+    <div class="info-field"><label>Photos <span id="wr-photo-count"></span></label><div id="wr-photos"></div></div>
+    <button class="wr-make" id="wr-make-btn" onclick="makeWorkReport()">Make PDF and attach to job</button>
+    <div class="wr-status" id="wr-status"></div>
+    <div id="wr-link-row" style="display:none;"><button class="mini-btn" onclick="copyWrLink()">Copy PDF link</button></div>
   </div>
 </div>
 

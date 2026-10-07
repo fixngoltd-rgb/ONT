@@ -21,6 +21,8 @@ let technicians = [];
 let activeAssignedFilter = '';
 let activeTechFilter = '';
 let editMode = false;
+let QUOTE_DATES = {};
+let EMAIL_LINK;
 
 function can(permKey){
   if(!CURRENT_USER) return false;
@@ -32,7 +34,7 @@ const COLUMNS = [
   {
     key: 'appointments_today',
     title: 'Today',
-    filter: j => !j.quote_needed && j.scheduled_at && isDueTodayOrOverdue(j.scheduled_at) && j.status !== 'completed' && j.status !== 'cancelled'
+    filter: j => !j.quote_needed && j.scheduled_at && isDueToday(j.scheduled_at) && j.status !== 'completed' && j.status !== 'cancelled'
   },
   {
     key: 'awaiting_start',
@@ -40,9 +42,10 @@ const COLUMNS = [
     filter: j => !j.quote_needed && ['active', 'contacted'].includes(j.status) && !j.scheduled_at
   },
   {
+    // missed appointments (date passed, not done) sit here first, in red
     key: 'awaiting_completion',
     title: 'Booked',
-    filter: j => !j.quote_needed && (j.status === 'booked' || (j.scheduled_at && j.status !== 'completed' && j.status !== 'cancelled')) && !isDueTodayOrOverdue(j.scheduled_at)
+    filter: j => !j.quote_needed && (j.status === 'booked' || (j.scheduled_at && j.status !== 'completed' && j.status !== 'cancelled')) && !isDueToday(j.scheduled_at)
   },
   {
     key: 'awaiting_invoice',
@@ -62,18 +65,55 @@ const COLUMNS = [
   {
     key: 'quote_needed',
     title: 'Quotes',
-    filter: j => j.quote_needed === true
+    filter: j => j.quote_needed === true && j.status !== 'cancelled'
+  },
+  {
+    key: 'cancelled',
+    title: 'Cancelled',
+    filter: j => j.status === 'cancelled'
   }
 ];
 
-function todayDateStr(){
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+/* ===== UK TIME (same rules as the desktop board) =====
+   Appointments are always shown/entered in UK time, whatever the phone's timezone is.
+   A value at exactly 00:00 UTC means "date only, no time set". */
+const UK_TZ = 'Europe/London';
+const _ukFmt = new Intl.DateTimeFormat('en-GB', { timeZone: UK_TZ, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23' });
+function _toDate(iso){
+  if(iso instanceof Date) return iso;
+  let t = String(iso).replace(' ', 'T');
+  if(!/(Z|[+-]\d\d(:?\d\d)?)$/.test(t)) t += (t.length <= 10 ? 'T00:00:00Z' : 'Z');
+  return new Date(t);
 }
-function isDueTodayOrOverdue(scheduledAt){
-  if(!scheduledAt) return false;
-  return scheduledAt.split('T')[0] <= todayDateStr();
+function ukParts(iso){
+  if(!iso) return null;
+  const d = _toDate(iso);
+  if(isNaN(d)) return null;
+  const o = {};
+  _ukFmt.formatToParts(d).forEach(p => { o[p.type] = p.value; });
+  return { date: `${o.year}-${o.month}-${o.day}`, time: `${o.hour}:${o.minute}`,
+           hasTime: !(d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0), ms: d.getTime() };
 }
+function ukDate(iso){ const p = ukParts(iso); return p ? p.date : ''; }
+function ukTime(iso){ const p = ukParts(iso); return (p && p.hasTime) ? p.time : ''; }
+function ukToIso(dateStr, timeStr){
+  if(!dateStr) return null;
+  if(!timeStr) return dateStr;
+  const [y, mo, d] = dateStr.split('-').map(Number);
+  const [h, mi] = timeStr.split(':').map(Number);
+  const wallMs = Date.UTC(y, mo-1, d, h, mi);
+  const offsetAt = ms => { const p = ukParts(new Date(ms)); const [yy,mm,dd] = p.date.split('-').map(Number); const [hh,mn] = p.time.split(':').map(Number); return Date.UTC(yy,mm-1,dd,hh,mn) - ms; };
+  let utc = wallMs - offsetAt(wallMs);
+  utc = wallMs - offsetAt(utc);
+  return new Date(utc).toISOString();
+}
+function apptSortKey(j){
+  const p = ukParts(j.scheduled_at);
+  if(!p) return '9999-99-99 99:99';
+  return p.date + ' ' + (p.hasTime ? p.time : '99:99');
+}
+function todayDateStr(){ return ukDate(new Date()); }
+function isDueToday(scheduledAt){ return !!scheduledAt && ukDate(scheduledAt) === todayDateStr(); }
 function daysSince(dateStr){
   if(!dateStr) return 0;
   return Math.max(0, Math.floor((new Date() - new Date(dateStr)) / 86400000));
@@ -81,7 +121,21 @@ function daysSince(dateStr){
 function badgeColor(days){ return days <= 2 ? 'green' : (days <= 5 ? 'amber' : 'red'); }
 function formatShortDate(dateStr){
   if(!dateStr) return '';
-  return new Date(dateStr).toLocaleDateString('en-GB', { day:'2-digit', month:'short' });
+  return _toDate(dateStr).toLocaleDateString('en-GB', { timeZone: UK_TZ, day:'2-digit', month:'short' });
+}
+function formatApptFull(iso){
+  if(!iso) return 'Not set';
+  const t = ukTime(iso);
+  return formatShortDate(iso) + (t ? ' at ' + t + ' UK' : '');
+}
+// newest job first: by the day it was added, then the exact time, then job number
+function newestFirst(a, b){
+  const d = (b.created || '').localeCompare(a.created || '');
+  if(d !== 0) return d;
+  const t = (b.created_at || '').localeCompare(a.created_at || '');
+  if(t !== 0) return t;
+  const n = r => { const m = (r || '').match(/(\d+)/); return m ? parseInt(m[1], 10) : 0; };
+  return n(b.ref) - n(a.ref);
 }
 function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
@@ -143,7 +197,7 @@ async function boot(){
 function applyRoleUI(){
   const isAdmin = CURRENT_USER.role === 'admin';
   // Employees only ever see their own jobs - team/filter/add-job are admin surfaces.
-  ['sb-newjob','sb-team','sb-tech','sb-people-label'].forEach(id => {
+  ['sb-newjob','sb-team','sb-tech','sb-people-label','sb-desk'].forEach(id => {
     const el = document.getElementById(id);
     if(el) el.style.display = isAdmin ? '' : 'none';
   });
@@ -165,6 +219,8 @@ async function sbAction(what){
   if(what === 'newjob') openNewJobScreen();
   else if(what === 'team') openTeamSheet('team');
   else if(what === 'tech') openTeamSheet('tech');
+  else if(what === 'desk') openActionDesk();
+  else if(what === 'theme') toggleTheme();
   else if(what === 'refresh'){
     showToast('Updating...');
     await Promise.all([fetchAllJobs(), fetchTeamAndTechnicians()]);
@@ -183,10 +239,24 @@ async function fetchAllJobs(){
     description: j.description, status: j.status, scheduled_at: j.scheduled_at, tech: j.tech, tech_phone: j.tech_phone,
     assigned_to: j.assigned_to, budget: j.budget, cost_to_us: j.cost_to_us, invoiced: !!j.invoiced,
     quote_needed: !!j.quote_needed, quoted: !!j.quoted, category: j.category, created: j.created,
-    created_at: j.created_at || j.created
+    created_at: j.created_at || j.created,
+    updated_at: j.updated_at, date_completed: j.date_completed, parent_job_id: j.parent_job_id
   }));
   renderTabs();
   renderPager();
+  fetchQuoteDates();
+}
+
+async function fetchQuoteDates(){
+  try {
+    const { data, error } = await sb.from('board_comments').select('job_id,created_at')
+      .or('message.ilike.QUOTATION%,message.ilike.%total cost%').order('created_at', { ascending: false }).limit(2000);
+    if(error || !data) return;
+    const m = {};
+    data.forEach(r => { if(!m[r.job_id]) m[r.job_id] = r.created_at; });
+    QUOTE_DATES = m;
+    renderPager();
+  } catch(e){}
 }
 
 function getVisibleJobs(){
@@ -308,6 +378,17 @@ function openNewJobScreen(){
 function closeNewJobScreen(){
   document.getElementById('newjob-screen').classList.remove('open');
 }
+async function nextRef(prefix){
+  // ask the database (archived jobs included) so a number is never reused
+  const { data } = await sb.from('jobs').select('ref').like('ref', prefix + '-%');
+  let max = 0;
+  (data || []).forEach(r => {
+    const m = (r.ref || '').match(new RegExp('^' + prefix + '-(\\d+)$'));
+    if(m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  return prefix + '-' + String(max + 1).padStart(3, '0');
+}
+
 async function submitNewJob(){
   const title = document.getElementById('nj-title').value.trim();
   const address = document.getElementById('nj-address').value.trim();
@@ -326,7 +407,13 @@ async function submitNewJob(){
     created: new Date().toISOString().split('T')[0]
   };
 
-  const { error } = await sb.from('jobs').insert([newJob]);
+  newJob.ref = await nextRef(newJob.quote_needed ? 'QUO' : 'JOB');
+  let { error } = await sb.from('jobs').insert([newJob]);
+  if(error && error.code === '23505'){
+    // someone else took that number a moment ago: take the next one
+    newJob.ref = await nextRef(newJob.quote_needed ? 'QUO' : 'JOB');
+    ({ error } = await sb.from('jobs').insert([newJob]));
+  }
   if(error){ showToast('Failed to create job: ' + error.message); return; }
 
   closeNewJobScreen();
@@ -352,31 +439,62 @@ function goToTab(i){
   renderTabs();
 }
 
+function quotedAgeTag(dateStr){
+  const d = daysSince(dateStr);
+  let cls = 'qa-ok', txt = d === 0 ? 'quoted today' : 'quoted ' + d + 'd ago';
+  if(d >= 14){ cls = 'qa-chase'; txt += ' - chase?'; }
+  else if(d >= 7){ cls = 'qa-follow'; txt += ' - follow up?'; }
+  return `<div class="job-tag ${cls}">${txt}</div>`;
+}
+
 function renderPager(){
   const visible = getVisibleJobs();
   const pager = document.getElementById('pager');
-  // Rebuilding innerHTML resets scrollLeft to 0, which would yank the user back
-  // to the first tab mid-swipe whenever a refresh happens to land at the same
-  // moment. Keep the currently active tab in view across the rebuild.
+  const todayStr = todayDateStr();
   pager.innerHTML = COLUMNS.map((col, idx) => {
     const jobs = visible.filter(col.filter);
+    // every column: newest on top. Quotes: still-to-quote first. Today/Booked: by appointment.
+    jobs.sort((a, b) => {
+      if(col.key === 'quote_needed' && !!a.quoted !== !!b.quoted) return a.quoted ? 1 : -1;
+      return newestFirst(a, b);
+    });
+    const isMissed = j => col.key === 'awaiting_completion' && j.scheduled_at && ukDate(j.scheduled_at) < todayStr;
+    if(col.key === 'appointments_today'){
+      jobs.sort((a, b) => apptSortKey(a).localeCompare(apptSortKey(b)));
+    } else if(col.key === 'awaiting_completion'){
+      const missedJobs = jobs.filter(isMissed).sort((a, b) => apptSortKey(a).localeCompare(apptSortKey(b)));
+      const restJobs = jobs.filter(j => !isMissed(j)).sort((a, b) => apptSortKey(a).localeCompare(apptSortKey(b)));
+      jobs.splice(0, jobs.length, ...missedJobs, ...restJobs);
+    }
+    let missedDone = false, upcomingDone = false, quotedDone = false;
     const cards = jobs.map(j => {
       let badge;
       if(col.key === 'completed_invoiced' || (col.key === 'quote_needed' && j.quoted)){
         badge = `<div class="badge green">&#10003;</div>`;
-      } else if((col.key === 'awaiting_completion' || col.key === 'appointments_today') && j.scheduled_at){
-        const overdue = col.key === 'appointments_today' && j.scheduled_at.split('T')[0] < todayDateStr();
-        badge = `<div class="badge ${overdue?'red':'date'}">${formatShortDate(j.scheduled_at)}</div>`;
+      } else if(col.key === 'appointments_today' && j.scheduled_at){
+        badge = `<div class="badge date">${ukTime(j.scheduled_at) || 'Today'}</div>`;
+      } else if(col.key === 'awaiting_completion' && j.scheduled_at){
+        badge = `<div class="badge ${isMissed(j) ? 'red' : 'date'}">${formatShortDate(j.scheduled_at)}${ukTime(j.scheduled_at) ? '<br>' + ukTime(j.scheduled_at) : ''}</div>`;
       } else {
         const d = daysSince(j.created_at || j.created);
         badge = `<div class="badge ${badgeColor(d)}">${d}</div>`;
       }
-      return `
-        <div class="job-card" onclick="openDetail('${j.id}','${col.key}')">
+      let divider = '';
+      if(col.key === 'awaiting_completion'){
+        if(isMissed(j) && !missedDone){ missedDone = true; divider = `<div class="list-divider red">Missed - needs a new date</div>`; }
+        else if(!isMissed(j) && missedDone && !upcomingDone){ upcomingDone = true; divider = `<div class="list-divider">Booked</div>`; }
+      }
+      if(col.key === 'quote_needed' && j.quoted && !quotedDone){ quotedDone = true; divider = `<div class="list-divider green">Quoted</div>`; }
+      let tag = '';
+      if(col.key === 'quote_needed' && j.quoted && QUOTE_DATES[j.id]) tag = quotedAgeTag(QUOTE_DATES[j.id]);
+      if(col.key === 'awaiting_start' && daysSince(j.created_at || j.created) >= 2) tag = `<div class="job-tag qa-follow">${daysSince(j.created_at || j.created)}d with no date - update the agent?</div>`;
+      return `${divider}
+        <div class="job-card${isMissed(j) ? ' missed' : ''}" onclick="openDetail('${j.id}','${col.key}')">
           <div class="job-main">
             <div class="job-ref">${escHtml(j.ref)}</div>
             <div class="job-title">${escHtml(j.title || 'Untitled')}</div>
             <div class="job-address">${escHtml(j.address || '')}</div>
+            ${tag}
           </div>
           ${badge}
         </div>`;
@@ -384,8 +502,6 @@ function renderPager(){
     return `<div class="page" data-idx="${idx}" ontouchstart="onPageTouchStart(event)" ontouchmove="onPageTouchMove(event)" ontouchend="onPageTouchEnd(event)">${cards}</div>`;
   }).join('');
   pager.onscroll = onPagerScroll;
-  // Restore scroll position to the active tab without animating - this runs
-  // after every data refresh, not just on first load, so it must be instant.
   pager.scrollLeft = activeTabIndex * pager.clientWidth;
 }
 
@@ -481,6 +597,8 @@ function openDetail(jobId, columnKey){
   const j = JOBS.find(x => x.id === jobId);
   if(!j) return;
   currentDetailId = jobId;
+  EMAIL_LINK = undefined;
+  if(columnKey === 'desk'){ const c = COLUMNS.find(c => c.filter(j)); columnKey = c ? c.key : null; }
   detailOpenedFromColumn = columnKey;
   editMode = false;
 
@@ -494,6 +612,7 @@ function openDetail(jobId, columnKey){
   switchDetailTab('info');
   loadComments(jobId);
   document.getElementById('detail-screen').classList.add('open');
+  loadEmailLink(jobId);
 }
 
 function renderInfoView(j, columnKey){
@@ -525,12 +644,14 @@ function renderInfoView(j, columnKey){
       <a class="call-btn ${techCall?'':'disabled'}" href="${techCall||'javascript:void(0)'}">&#128222; Tech${j.tech ? ' - '+escHtml(j.tech) : ''}</a>
     </div>
     ${actionBoxHtml}
+    ${isAdmin ? `<button class="wr-open" onclick="openWorkReport()">&#128196; Work Report PDF</button>
+    <div class="info-field"><label>Email thread (admin)</label><div class="val" id="email-link-box">Loading...</div></div>` : ''}
     <div class="info-field"><label>Status</label><div class="val"><span class="status-pill status-${j.status}">${escHtml(j.status)}</span></div></div>
     <div class="info-field"><label>Address</label><div class="val">${escHtml(j.address || '—')}</div></div>
     <div class="info-field"><label>Ticket ID</label><div class="val">${escHtml(j.external_job_id || '—')}</div></div>
     <div class="info-field"><label>Tenant</label><div class="val">${escHtml(j.tenant || '—')}${j.tenant_phone ? ' · '+escHtml(j.tenant_phone) : ''}</div></div>
     <div class="info-field"><label>Description</label><div class="val">${escHtml(j.description || '—')}</div></div>
-    <div class="info-field"><label>Appointment</label><div class="val">${j.scheduled_at ? formatShortDate(j.scheduled_at) : 'Not set'}</div></div>
+    <div class="info-field"><label>Appointment</label><div class="val">${formatApptFull(j.scheduled_at)}</div></div>
     <div class="info-field"><label>Technician</label><div class="val">${escHtml(j.tech || '—')}${j.tech_phone ? ' · '+escHtml(j.tech_phone) : ''}</div></div>
     <div class="info-field"><label>Assigned To</label><div class="val">${escHtml(j.assigned_to || 'Unassigned')}</div></div>
     <div class="info-field"><label>Category</label><div class="val">${escHtml(j.category || '—')}</div></div>
@@ -541,6 +662,7 @@ function renderInfoView(j, columnKey){
     ` : ''}
     ${can('can_delete_jobs') ? `<button id="delete-job-btn" style="width:100%;padding:12px;border-radius:9px;border:1px solid #fecaca;background:#fef2f2;color:var(--red);font-weight:700;margin-top:10px;" onclick="deleteJob()">Delete Job</button>` : ''}
   `;
+  if(isAdmin && EMAIL_LINK !== undefined) renderEmailLink();
 }
 
 function renderInfoEdit(j){
@@ -564,7 +686,8 @@ function renderInfoEdit(j){
         ${['active','contacted','booked','completed','revisit','cancelled'].map(s => `<option value="${s}" ${j.status===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}
       </select>
     </div>
-    <div class="info-field"><label>Appointment Date</label><input class="field-input" type="date" id="d-scheduled-input" value="${j.scheduled_at ? j.scheduled_at.split('T')[0] : ''}"></div>
+    <div class="info-field"><label>Appointment Date</label><input class="field-input" type="date" id="d-scheduled-input" value="${j.scheduled_at ? ukDate(j.scheduled_at) : ''}"></div>
+    <div class="info-field"><label>Appointment Time (UK, optional)</label><input class="field-input" type="time" id="d-scheduled-time-input" value="${j.scheduled_at ? ukTime(j.scheduled_at) : ''}"></div>
     <div class="info-field"><label>Technician</label><input class="field-input" id="d-tech-input" list="tech-names-list" value="${escHtml(j.tech||'')}" placeholder="Start typing a technician name..."></div>
     <div class="info-field"><label>Technician Phone</label><input class="field-input" id="d-tech-phone-input" value="${escHtml(j.tech_phone||'')}"></div>
     <div class="info-field" id="d-assigned-wrap">
@@ -616,7 +739,7 @@ async function saveJobEdits(){
     tenant_phone: document.getElementById('d-tenant-phone-input').value.trim() || null,
     description: document.getElementById('d-desc-input').value.trim() || null,
     status: document.getElementById('d-status-input').value,
-    scheduled_at: scheduledVal || null,
+    scheduled_at: ukToIso(scheduledVal, (document.getElementById('d-scheduled-time-input') || {}).value || ''),
     tech: document.getElementById('d-tech-input').value.trim() || null,
     tech_phone: document.getElementById('d-tech-phone-input').value.trim() || null,
     category: document.getElementById('d-category-input').value.trim() || null
@@ -672,6 +795,7 @@ async function deleteJob(){
 
 function closeDetail(){
   document.getElementById('detail-screen').classList.remove('open');
+  if(document.getElementById('desk-screen').classList.contains('open')) renderActionDesk();
   currentDetailId = null;
   editMode = false;
   pendingPhoto = null;
@@ -686,10 +810,12 @@ function switchDetailTab(tab){
 }
 
 window.onBack = function(){
+  if(document.getElementById('wr-screen').classList.contains('open')){ closeWorkReport(); return 'false'; }
   if(document.getElementById('newjob-screen').classList.contains('open')){
     closeNewJobScreen();
     return 'false';
   }
+  if(document.getElementById('desk-screen').classList.contains('open') && !document.getElementById('detail-screen').classList.contains('open')){ closeActionDesk(); return 'false'; }
   if(document.getElementById('team-sheet').classList.contains('open')){
     closeTeamSheet();
     return 'false';
@@ -738,9 +864,11 @@ async function unmarkQuoted(){
 }
 async function markQuoteApproved(){
   const updates = { quote_needed: false, quoted: false, status: 'active', scheduled_at: null };
+  const cur = JOBS.find(x => x.id === currentDetailId);
+  if(cur && cur.quote_needed) updates.ref = await nextRef('JOB');   // approved quote becomes a real job number
   const { error } = await sb.from('jobs').update(updates).eq('id', currentDetailId);
   if(error){ showToast('Failed: ' + error.message); return; }
-  showToast('Quote approved - now a job');
+  showToast('Quote approved - now ' + (updates.ref || 'a job'));
   refreshAfterAction(updates);
 }
 
@@ -748,7 +876,7 @@ async function markQuoteApproved(){
 
 async function loadComments(jobId){
   const list = document.getElementById('comment-list');
-  const { data, error } = await sb.from('board_comments').select('*').eq('job_id', jobId).order('created_at', { ascending: true });
+  const { data, error } = await sb.from('board_comments').select('*').eq('job_id', jobId).order('created_at', { ascending: false });
   if(error){ list.innerHTML = '<div class="no-comments">Failed to load comments.</div>'; return; }
   if(!data || !data.length){ list.innerHTML = '<div class="no-comments">No comments yet.</div>'; return; }
 
@@ -758,21 +886,49 @@ async function loadComments(jobId){
   (attachData || []).forEach(a => { (byComment[a.comment_id] = byComment[a.comment_id] || []).push(a); });
 
   list.innerHTML = data.map(c => {
-    const time = new Date(c.created_at).toLocaleString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
+    const time = new Date(c.created_at).toLocaleString('en-GB', { timeZone: UK_TZ, day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
     let attachments = byComment[c.id] || [];
     if(c.file_url && !attachments.length) attachments = [{ file_url: c.file_url, file_name: c.file_name }];
     const photos = attachments.filter(a => /\.(jpe?g|png)$/i.test(a.file_name||'')).map(a =>
       `<img class="comment-photo" src="${escHtml(a.file_url)}">`
     ).join('');
+    const docs = attachments.filter(a => /\.pdf$/i.test(a.file_name||'')).map(a =>
+      `<div class="comment-doc">&#128196; ${escHtml(a.file_name)}</div>`
+    ).join('');
+    const canEdit = CURRENT_USER && (CURRENT_USER.role === 'admin' || c.author_user_id === CURRENT_USER.id);
     return `
       <div class="comment-item">
-        <div class="comment-author">${escHtml(c.author)}</div>
-        <div class="comment-time">${time}</div>
-        <div class="comment-text">${escHtml(c.message)}</div>
-        ${photos}
+        <div class="comment-head"><div><div class="comment-author">${escHtml(c.author)}</div><div class="comment-time">${time}</div></div>
+          ${canEdit ? `<button class="comment-edit-btn" onclick="startEditComment('${c.id}')" aria-label="Edit comment">&#9998;</button>` : ''}</div>
+        <div class="comment-text" id="comment-text-${c.id}">${escHtml(c.message)}</div>
+        ${photos}${docs}
       </div>`;
   }).join('');
-  list.scrollTop = list.scrollHeight;
+  list.scrollTop = 0;
+}
+
+function startEditComment(id){
+  const box = document.getElementById('comment-text-' + id);
+  if(!box) return;
+  const current = box.textContent;
+  box.innerHTML = `<textarea id="comment-edit-${id}" class="field-input" rows="7"></textarea>
+    <div class="edit-actions"><button class="save-btn" onclick="saveEditComment('${id}', this)">Save</button>
+    <button class="cancel-btn" onclick="loadComments(currentDetailId)">Cancel</button></div>`;
+  const ta = document.getElementById('comment-edit-' + id);
+  ta.value = current; ta.focus();
+}
+async function saveEditComment(id, btn){
+  const ta = document.getElementById('comment-edit-' + id);
+  if(!ta) return;
+  const message = ta.value.trim();
+  if(!message){ showToast('A comment cannot be empty'); return; }
+  if(btn){ btn.disabled = true; btn.textContent = 'Saving...'; }
+  let q = sb.from('board_comments').update({ message }).eq('id', id);
+  if(CURRENT_USER.role !== 'admin') q = q.eq('author_user_id', CURRENT_USER.id);
+  const { data, error } = await q.select();
+  if(error){ showToast('Failed to save: ' + error.message); if(btn){ btn.disabled = false; btn.textContent = 'Save'; } return; }
+  if(!data || !data.length){ showToast('You can only edit your own comments'); }
+  loadComments(currentDetailId);
 }
 
 function onPhotoChosen(e){
@@ -830,6 +986,247 @@ async function postComment(){
   renderPhotoPreview();
   loadComments(currentDetailId);
 }
+
+/* ===== ACTION DESK (admin) =====
+   Everything that needs a nudge, in one scrolling list. The normal tabs still show everything. */
+function openActionDesk(){
+  renderActionDesk();
+  document.getElementById('desk-screen').classList.add('open');
+}
+function closeActionDesk(){ document.getElementById('desk-screen').classList.remove('open'); }
+
+function renderActionDesk(){
+  const el = document.getElementById('desk-body');
+  const jobs = JOBS;
+  const today = todayDateStr();
+  const norm = a => (a || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const sev = (d, warn, bad) => d >= bad ? 'bad' : (d >= warn ? 'warn' : '');
+  const byAgeDesc = (a, b) => b.days - a.days;
+  const sections = [];
+
+  const sent = jobs.filter(j => j.quote_needed && j.quoted && j.status !== 'cancelled')
+    .map(j => ({ j, days: QUOTE_DATES[j.id] ? daysSince(QUOTE_DATES[j.id]) : daysSince(j.created_at) })).sort(byAgeDesc);
+  sections.push({ title: 'Quotes sent, waiting on a reply', hint: 'chase after 7 days',
+    rows: sent.map(x => ({ j: x.j, note: 'quoted ' + (x.days === 0 ? 'today' : x.days + 'd ago'), cls: sev(x.days, 7, 14) })) });
+
+  const toQuote = jobs.filter(j => j.quote_needed && !j.quoted && j.status !== 'cancelled')
+    .map(j => ({ j, days: daysSince(j.created_at) })).sort(byAgeDesc);
+  sections.push({ title: 'Quotes still to send', hint: 'waiting since the request came in',
+    rows: toQuote.map(x => ({ j: x.j, note: 'asked ' + (x.days === 0 ? 'today' : x.days + 'd ago'), cls: sev(x.days, 2, 5) })) });
+
+  const missed = jobs.filter(j => !j.quote_needed && j.scheduled_at && ukDate(j.scheduled_at) < today && j.status !== 'completed' && j.status !== 'cancelled')
+    .map(j => ({ j, days: daysSince(j.scheduled_at) })).sort(byAgeDesc);
+  sections.push({ title: 'Missed appointments', hint: 'rebook or close off',
+    rows: missed.map(x => ({ j: x.j, note: 'was ' + formatShortDate(x.j.scheduled_at) + (x.j.tech ? ' - ' + x.j.tech : ''), cls: 'bad' })) });
+
+  const noDate = jobs.filter(j => !j.quote_needed && ['active','contacted'].includes(j.status) && !j.scheduled_at && daysSince(j.created_at) >= 2)
+    .map(j => ({ j, days: daysSince(j.created_at) })).sort(byAgeDesc);
+  sections.push({ title: 'No start date yet', hint: 'update the agent',
+    rows: noDate.map(x => ({ j: x.j, note: x.days + 'd with no date', cls: sev(x.days, 3, 6) })) });
+
+  const toInvoice = jobs.filter(j => !j.quote_needed && j.status === 'completed' && !j.invoiced)
+    .map(j => ({ j, days: daysSince(j.date_completed || j.updated_at || j.created_at) })).sort(byAgeDesc);
+  sections.push({ title: 'Completed, not invoiced', hint: 'oldest first',
+    rows: toInvoice.map(x => ({ j: x.j, note: 'done ' + (x.days === 0 ? 'today' : x.days + 'd ago'), cls: sev(x.days, 3, 7) })) });
+
+  const doneAt = {};
+  jobs.filter(j => !j.quote_needed && j.status === 'completed').forEach(j => { const k = norm(j.address); if(k) (doneAt[k] = doneAt[k] || []).push(j); });
+  const upsell = jobs.filter(j => j.quote_needed && j.status !== 'cancelled' && doneAt[norm(j.address)]);
+  sections.push({ title: 'Upsell: open quotes where we already worked', hint: 'not yet approved',
+    rows: upsell.map(j => ({ j, note: (j.quoted ? 'quoted' : 'not quoted yet') + ' - ' + doneAt[norm(j.address)].length + ' done', cls: '' })) });
+
+  const total = sections.reduce((n, s) => n + s.rows.length, 0);
+  el.innerHTML = `<div class="desk-sub">${total} item${total === 1 ? '' : 's'} that need a nudge. The tabs still show everything.</div>` +
+    sections.map(s => `
+    <div class="desk-section">
+      <h3>${escHtml(s.title)} <span class="desk-count">${s.rows.length}</span></h3>
+      <div class="desk-hint">${escHtml(s.hint)}</div>
+      ${s.rows.length ? s.rows.map(r => `
+        <div class="desk-row" onclick="openDetail('${r.j.id}','desk')">
+          <div class="desk-main"><div class="job-ref">${escHtml(r.j.ref)}</div><div class="job-title">${escHtml(r.j.title || 'Untitled')}</div><div class="job-address">${escHtml(r.j.address || '')}</div></div>
+          <div class="desk-note ${r.cls}">${escHtml(r.note)}</div>
+        </div>`).join('') : '<div class="desk-empty">Nothing here.</div>'}
+    </div>`).join('');
+}
+
+/* ===== EMAIL THREAD LINK (admin only; stored in job_email_links) =====
+   The phone app cannot open Gmail itself, so the link is copied for pasting into Gmail/Chrome. */
+function copyText(txt){
+  try {
+    if(navigator.clipboard && navigator.clipboard.writeText){ return navigator.clipboard.writeText(txt).then(() => true).catch(() => legacyCopy(txt)); }
+  } catch(e){}
+  return Promise.resolve(legacyCopy(txt));
+}
+function legacyCopy(txt){
+  try {
+    const ta = document.createElement('textarea'); ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    const ok = document.execCommand('copy'); ta.remove(); return ok;
+  } catch(e){ return false; }
+}
+
+async function loadEmailLink(jobId){
+  const box = document.getElementById('email-link-box');
+  if(!box || !(CURRENT_USER && CURRENT_USER.role === 'admin')) return;
+  const { data } = await sb.from('job_email_links').select('*').eq('job_id', jobId).maybeSingle();
+  if(currentDetailId !== jobId) return;
+  EMAIL_LINK = data || null;
+  renderEmailLink();
+}
+function renderEmailLink(){
+  const box = document.getElementById('email-link-box');
+  if(!box) return;
+  if(EMAIL_LINK){
+    box.innerHTML = `<button class="mini-btn" onclick="copyEmailLink()">Copy Gmail link</button> <button class="mini-btn danger" onclick="removeEmailLink()">Remove</button>`;
+  } else {
+    box.innerHTML = `<div class="mini-row"><input class="field-input" id="email-link-input" placeholder="Paste Gmail link or thread id"><button class="mini-btn primary" onclick="saveEmailLink()">Save</button></div>`;
+  }
+}
+async function copyEmailLink(){
+  if(!EMAIL_LINK) return;
+  const ok = await copyText(EMAIL_LINK.gmail_url);
+  showToast(ok ? 'Link copied - paste it in Chrome or Gmail' : 'Could not copy the link');
+}
+async function saveEmailLink(){
+  if(!currentDetailId) return;
+  const raw = (document.getElementById('email-link-input').value || '').trim();
+  if(!raw) return;
+  const m = raw.match(/([0-9a-f]{16})(?![0-9a-f])/i);
+  if(!m){ showToast('Could not find a Gmail thread id in that link'); return; }
+  const threadId = m[1].toLowerCase();
+  const url = 'https://mail.google.com/mail/?authuser=fixngoltd@gmail.com#all/' + threadId;
+  const { error } = await sb.from('job_email_links').upsert({ job_id: currentDetailId, thread_id: threadId, gmail_url: url }, { onConflict: 'job_id' });
+  if(error){ showToast('Failed to save link: ' + error.message); return; }
+  EMAIL_LINK = { job_id: currentDetailId, thread_id: threadId, gmail_url: url };
+  renderEmailLink();
+}
+async function removeEmailLink(){
+  if(!currentDetailId || !confirm('Remove the email thread link from this job?')) return;
+  const { error } = await sb.from('job_email_links').delete().eq('job_id', currentDetailId);
+  if(error){ showToast('Failed to remove link: ' + error.message); return; }
+  EMAIL_LINK = null; renderEmailLink();
+}
+
+/* ===== WORK REPORT PDF (admin) =====
+   Same report maker as the desktop board. The PDF code and fonts are downloaded the first time
+   it is needed (not at app start), so the rest of the app never depends on them. The PDF is
+   attached to the job, since a phone WebView cannot save files directly. */
+const WR_REMOTE_BASE = 'https://raw.githubusercontent.com/fixngoltd-rgb/ont/main/testing-fix-and-go-app/app/src/main/assets/www/wr/';
+let WR_PHOTOS = [], WR_LAST_SAVED = '', WR_LOADING = null, WR_LAST_URL = '';
+
+function loadWrLib(){
+  if(window.WorkReport && window.jspdf) return Promise.resolve();
+  if(WR_LOADING) return WR_LOADING;
+  window.WR_BASE = window.WR_BASE_OVERRIDE || WR_REMOTE_BASE;
+  const inject = async name => {
+    const r = await fetch(window.WR_BASE + name);
+    if(!r.ok) throw new Error('Could not download the report tools (' + r.status + ')');
+    const s = document.createElement('script'); s.textContent = await r.text(); document.head.appendChild(s);
+  };
+  WR_LOADING = (async () => { await inject('jspdf.umd.min.js'); await inject('workreport.js'); })();
+  WR_LOADING.catch(() => { WR_LOADING = null; });
+  return WR_LOADING;
+}
+
+async function openWorkReport(){
+  if(!currentDetailId || !(CURRENT_USER && CURRENT_USER.role === 'admin')) return;
+  const j = JOBS.find(x => x.id === currentDetailId); if(!j) return;
+  document.getElementById('wr-addr').textContent = (j.ref || '') + ' - ' + (j.address || '');
+  const st = document.getElementById('wr-status'); st.textContent = ''; st.className = 'wr-status';
+  document.getElementById('wr-screen').classList.add('open');
+  document.getElementById('wr-link-row').style.display = 'none';
+  const ta = document.getElementById('wr-text'); ta.value = '';
+  const { data: saved } = await sb.from('job_work_reports').select('body').eq('job_id', j.id).maybeSingle();
+  WR_LAST_SAVED = (saved && saved.body) || '';
+  ta.value = WR_LAST_SAVED;
+  const { data: files } = await sb.from('job_files').select('file_url,file_name,mime_type,uploaded_at').eq('job_id', j.id).order('uploaded_at', { ascending: true });
+  const seen = new Set(); WR_PHOTOS = [];
+  (files || []).filter(f => (f.mime_type || '').startsWith('image/')).forEach(f => {
+    if(seen.has(f.file_url)) return; seen.add(f.file_url);
+    WR_PHOTOS.push({ url: f.file_url, name: f.file_name, selected: true });
+  });
+  renderWrPhotos();
+}
+async function saveWorkReportText(){
+  if(!currentDetailId) return;
+  const v = document.getElementById('wr-text').value;
+  if(v === WR_LAST_SAVED || !v.trim()) return;
+  const { error } = await sb.from('job_work_reports').upsert({ job_id: currentDetailId, body: v, updated_at: new Date().toISOString(), updated_by: CURRENT_USER ? CURRENT_USER.name : null });
+  if(!error) WR_LAST_SAVED = v;
+}
+async function closeWorkReport(){ await saveWorkReportText(); document.getElementById('wr-screen').classList.remove('open'); }
+function renderWrPhotos(){
+  const g = document.getElementById('wr-photos');
+  const order = WR_PHOTOS.filter(p => p.selected);
+  document.getElementById('wr-photo-count').textContent = '(' + order.length + ' selected, in the order you tick them)';
+  if(!WR_PHOTOS.length){ g.innerHTML = '<div class="empty-state" style="padding:16px;">No photos on this job.</div>'; return; }
+  g.innerHTML = WR_PHOTOS.map((p, i) => {
+    const n = p.selected ? order.indexOf(p) + 1 : 0;
+    return `<div class="wr-photo${p.selected ? ' on' : ''}" onclick="toggleWrPhoto(${i})"><img src="${escHtml(p.url)}">${p.selected ? `<span>${n}</span>` : ''}</div>`;
+  }).join('');
+}
+function toggleWrPhoto(i){
+  const p = WR_PHOTOS[i]; p.selected = !p.selected;
+  if(p.selected){ WR_PHOTOS.splice(i, 1); WR_PHOTOS.push(p); }
+  renderWrPhotos();
+}
+async function makeWorkReport(){
+  const j = JOBS.find(x => x.id === currentDetailId); if(!j) return;
+  const st = document.getElementById('wr-status'); const btn = document.getElementById('wr-make-btn');
+  btn.disabled = true; st.className = 'wr-status'; st.textContent = 'Building the PDF...';
+  try {
+    await saveWorkReportText();
+    await loadWrLib();
+    const photos = WR_PHOTOS.filter(p => p.selected).map(p => p.url);
+    const blob = await window.WorkReport.makePdf({ address: j.address, text: document.getElementById('wr-text').value, photos });
+    const fname = (j.address || j.ref).replace(/[\\/:*?"<>|]+/g, '').trim() + '.pdf';
+    const filePath = `${j.id}/${Date.now()}_${fname}`;
+    const { error: upErr } = await sb.storage.from('job-files').upload(filePath, blob, { contentType: 'application/pdf' });
+    if(upErr) throw new Error('Upload failed: ' + upErr.message);
+    const { data: urlData } = sb.storage.from('job-files').getPublicUrl(filePath);
+    await sb.from('job_files').insert([{ job_id: j.id, file_name: fname, file_url: urlData.publicUrl, mime_type: 'application/pdf' }]);
+    const { data: nc, error: cErr } = await sb.from('board_comments').insert([{
+      job_id: j.id, author: (CURRENT_USER.name || 'Ilyas').replace(/\s*\(Admin\)$/, ''),
+      message: 'work report [1 attachment: ' + fname + ']', author_user_id: CURRENT_USER.id }]).select().single();
+    if(!cErr && nc) await sb.from('comment_attachments').insert([{ comment_id: nc.id, file_url: urlData.publicUrl, file_name: fname, mime_type: 'application/pdf' }]);
+    WR_LAST_URL = urlData.publicUrl;
+    document.getElementById('wr-link-row').style.display = '';
+    st.className = 'wr-status ok'; st.textContent = 'Done - attached to the job as "' + fname + '".';
+    loadComments(j.id);
+  } catch(e){ st.className = 'wr-status err'; st.textContent = e.message || String(e); }
+  btn.disabled = false;
+}
+async function copyWrLink(){
+  const ok = await copyText(WR_LAST_URL);
+  showToast(ok ? 'PDF link copied' : 'Could not copy the link');
+}
+
+/* ===== THEME (light / dark, remembered) ===== */
+function applyTheme(){
+  let t = 'light';
+  try { t = localStorage.getItem('fg-theme') || 'light'; } catch(e){}
+  document.documentElement.setAttribute('data-theme', t);
+  const lbl = document.getElementById('theme-label');
+  if(lbl) lbl.textContent = t === 'dark' ? 'Light mode' : 'Dark mode';
+}
+function toggleTheme(){
+  let t = 'light';
+  try { t = localStorage.getItem('fg-theme') || 'light'; } catch(e){}
+  t = t === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem('fg-theme', t); } catch(e){}
+  applyTheme();
+}
+applyTheme();
+
+/* ===== UK CLOCK ===== */
+function tickUkClock(){
+  const el = document.getElementById('uk-clock'); if(!el) return;
+  const now = new Date();
+  const t = now.toLocaleTimeString('en-GB', { timeZone: UK_TZ, hour: 'numeric', minute: '2-digit', hour12: true }).toUpperCase();
+  const d = now.toLocaleDateString('en-GB', { timeZone: UK_TZ, weekday: 'short', day: 'numeric', month: 'short' });
+  el.innerHTML = `<b>${t}</b> <span>UK</span><br><small>${d}</small>`;
+}
+tickUkClock(); setInterval(tickUkClock, 15000);
 
 /* ===== INIT ===== */
 boot();
