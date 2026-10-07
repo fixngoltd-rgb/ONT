@@ -651,6 +651,11 @@ function renderInfoView(j, columnKey){
     <div class="info-field"><label>Ticket ID</label><div class="val">${escHtml(j.external_job_id || '—')}</div></div>
     <div class="info-field"><label>Tenant</label><div class="val">${escHtml(j.tenant || '—')}${j.tenant_phone ? ' · '+escHtml(j.tenant_phone) : ''}</div></div>
     <div class="info-field"><label>Description</label><div class="val">${escHtml(j.description || '—')}</div></div>
+    <div class="info-field"><label>Photos &amp; Files <span id="pf-count"></span></label>
+      <div id="pf-grid" class="pf-grid"><div class="pf-none">Loading...</div></div>
+      <div class="pf-upload"><input type="file" id="pf-input" multiple accept="image/*,video/*,.pdf" style="display:none;" onchange="uploadJobFiles(event)">
+        <button class="mini-btn primary" id="pf-upload-btn" onclick="document.getElementById('pf-input').click()">+ Add photos / files</button></div></div>
+    <div class="info-field"><label>Received</label><div class="val">${j.created ? formatShortDate(j.created) : '—'}</div></div>
     <div class="info-field"><label>Appointment</label><div class="val">${formatApptFull(j.scheduled_at)}</div></div>
     <div class="info-field"><label>Technician</label><div class="val">${escHtml(j.tech || '—')}${j.tech_phone ? ' · '+escHtml(j.tech_phone) : ''}</div></div>
     <div class="info-field"><label>Assigned To</label><div class="val">${escHtml(j.assigned_to || 'Unassigned')}</div></div>
@@ -660,9 +665,13 @@ function renderInfoView(j, columnKey){
     <div class="info-field"><label>Cost to Us</label><div class="val">${j.cost_to_us != null ? '£'+Number(j.cost_to_us).toFixed(2) : '—'}</div></div>
     <div class="info-field"><label>Invoiced</label><div class="val">${j.invoiced ? 'Yes' : 'No'}</div></div>
     ` : ''}
+    <div class="info-field"><label>Linked jobs</label><div id="linked-list"></div>
+      ${isAdmin ? `<div class="mini-row" style="margin-top:8px;"><input class="field-input" id="link-job-input" placeholder="Link a job (e.g. JOB-120)"><button class="mini-btn primary" onclick="linkJobFromInput()">Link</button></div>` : ''}</div>
     ${can('can_delete_jobs') ? `<button id="delete-job-btn" style="width:100%;padding:12px;border-radius:9px;border:1px solid #fecaca;background:#fef2f2;color:var(--red);font-weight:700;margin-top:10px;" onclick="deleteJob()">Delete Job</button>` : ''}
   `;
   if(isAdmin && EMAIL_LINK !== undefined) renderEmailLink();
+  loadJobFiles(j.id);
+  renderLinkedJobs(j);
 }
 
 function renderInfoEdit(j){
@@ -810,6 +819,7 @@ function switchDetailTab(tab){
 }
 
 window.onBack = function(){
+  if(document.getElementById('viewer-screen').classList.contains('open')){ closeViewer(); return 'false'; }
   if(document.getElementById('wr-preview-screen').classList.contains('open')){ closeWrPreview(); return 'false'; }
   if(document.getElementById('wr-screen').classList.contains('open')){ closeWorkReport(); return 'false'; }
   if(document.getElementById('newjob-screen').classList.contains('open')){
@@ -890,11 +900,11 @@ async function loadComments(jobId){
     const time = new Date(c.created_at).toLocaleString('en-GB', { timeZone: UK_TZ, day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
     let attachments = byComment[c.id] || [];
     if(c.file_url && !attachments.length) attachments = [{ file_url: c.file_url, file_name: c.file_name }];
-    const photos = attachments.filter(a => /\.(jpe?g|png)$/i.test(a.file_name||'')).map(a =>
-      `<img class="comment-photo" src="${escHtml(a.file_url)}">`
+    const photos = attachments.filter(a => /\.(jpe?g|png|webp|gif)$/i.test(a.file_name||'')).map(a =>
+      `<img class="comment-photo" src="${escHtml(a.file_url)}" onclick="openViewer('${escHtml(a.file_url)}','${escHtml(a.file_name||'')}','image/jpeg')">`
     ).join('');
     const docs = attachments.filter(a => /\.pdf$/i.test(a.file_name||'')).map(a =>
-      `<div class="comment-doc">&#128196; ${escHtml(a.file_name)}</div>`
+      `<div class="comment-doc" onclick="openViewer('${escHtml(a.file_url)}','${escHtml(a.file_name||'')}','application/pdf')">&#128196; ${escHtml(a.file_name)} <span>tap to open</span></div>`
     ).join('');
     const canEdit = CURRENT_USER && (CURRENT_USER.role === 'admin' || c.author_user_id === CURRENT_USER.id);
     return `
@@ -1272,6 +1282,171 @@ function tickUkClock(){
   el.innerHTML = `<b>${t}</b> <span>UK</span><br><small>${d}</small>`;
 }
 tickUkClock(); setInterval(tickUkClock, 15000);
+
+/* ===== PHOTOS & FILES (on the job's Info page) ===== */
+let JOB_FILES = [];
+async function loadJobFiles(jobId){
+  const grid = document.getElementById('pf-grid'); if(!grid) return;
+  const { data, error } = await sb.from('job_files').select('*').eq('job_id', jobId).order('uploaded_at', { ascending: false });
+  if(currentDetailId !== jobId) return;
+  const g = document.getElementById('pf-grid'); if(!g) return;
+  if(error){ g.innerHTML = '<div class="pf-none">Failed to load files.</div>'; return; }
+  JOB_FILES = data || [];
+  const cnt = document.getElementById('pf-count'); if(cnt) cnt.textContent = JOB_FILES.length ? '(' + JOB_FILES.length + ')' : '';
+  if(!JOB_FILES.length){ g.innerHTML = '<div class="pf-none">No files uploaded yet.</div>'; return; }
+  const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
+  g.innerHTML = JOB_FILES.map((f, i) => {
+    const mime = f.mime_type || '';
+    const inner = mime.startsWith('image/') ? `<img src="${escHtml(f.file_url)}" loading="lazy">`
+      : `<span class="pf-icon">${mime.startsWith('video/') ? '&#127916;' : (mime === 'application/pdf' ? '&#128196;' : '&#128206;')}</span>`;
+    return `<div class="pf-thumb" onclick="openViewerFile(${i})">${inner}<div class="pf-name">${escHtml(f.file_name || '')}</div>
+      ${isAdmin ? `<button class="pf-del" onclick="event.stopPropagation();deleteJobFile('${f.id}')" aria-label="Delete">&times;</button>` : ''}</div>`;
+  }).join('');
+}
+function openViewerFile(i){ const f = JOB_FILES[i]; if(f) openViewer(f.file_url, f.file_name || '', f.mime_type || ''); }
+
+async function uploadJobFiles(e){
+  const files = Array.from(e.target.files || []); e.target.value = '';
+  if(!files.length || !currentDetailId) return;
+  const btn = document.getElementById('pf-upload-btn'); const jobId = currentDetailId;
+  const allowed = ['jpg','jpeg','png','webp','gif','pdf','mp4','mov','webm'];
+  let done = 0;
+  for(const file of files){
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    if(!allowed.includes(ext)){ showToast('Skipped ' + file.name + ' (type not allowed)'); continue; }
+    if(btn){ btn.disabled = true; btn.textContent = 'Uploading ' + (done + 1) + ' of ' + files.length + '...'; }
+    const filePath = `${jobId}/${Date.now()}_${file.name}`;
+    const { error: upErr } = await sb.storage.from('job-files').upload(filePath, file);
+    if(upErr){ showToast('Upload failed: ' + upErr.message); continue; }
+    const { data: urlData } = sb.storage.from('job-files').getPublicUrl(filePath);
+    const { error: dbErr } = await sb.from('job_files').insert([{ job_id: jobId, file_name: file.name, file_url: urlData.publicUrl, mime_type: file.type || null }]);
+    if(dbErr){ showToast('Saved the file but not its record: ' + dbErr.message); continue; }
+    done++;
+  }
+  if(btn){ btn.disabled = false; btn.textContent = '+ Add photos / files'; }
+  if(done) showToast(done + ' file' + (done > 1 ? 's' : '') + ' added');
+  loadJobFiles(jobId);
+}
+async function deleteJobFile(fileId){
+  if(!confirm('Delete this file from the job?')) return;
+  const { error } = await sb.from('job_files').delete().eq('id', fileId);
+  if(error){ showToast('Failed to delete: ' + error.message); return; }
+  loadJobFiles(currentDetailId);
+}
+
+/* ===== FILE VIEWER (photos with pinch-zoom, videos, PDFs drawn as pages) ===== */
+let VW = { s: 1, x: 0, y: 0 };
+function closeViewer(){
+  const v = document.getElementById('viewer-screen'); v.classList.remove('open');
+  const body = document.getElementById('viewer-body'); const vid = body.querySelector('video'); if(vid) vid.pause();
+  body.innerHTML = '';
+}
+async function openViewer(url, name, mime){
+  const v = document.getElementById('viewer-screen'); const body = document.getElementById('viewer-body');
+  document.getElementById('viewer-title').textContent = name || '';
+  body.innerHTML = ''; body.style.touchAction = ''; v.classList.add('open');
+  const isPdf = mime === 'application/pdf' || /\.pdf$/i.test(name || '');
+  const isVideo = (mime || '').startsWith('video/') || /\.(mp4|mov|webm)$/i.test(name || '');
+  const isImage = (mime || '').startsWith('image/') || /\.(jpe?g|png|webp|gif)$/i.test(name || '');
+  if(isImage){
+    const img = document.createElement('img'); img.src = url; img.className = 'viewer-img'; img.draggable = false;
+    body.style.touchAction = 'none'; body.appendChild(img); VW = { s: 1, x: 0, y: 0 }; attachPinch(body, img);
+  } else if(isVideo){
+    body.innerHTML = `<video src="${escHtml(url)}" controls playsinline autoplay class="viewer-video"></video>`;
+  } else if(isPdf){
+    body.innerHTML = '<div class="viewer-msg">Opening PDF...</div>';
+    try {
+      await loadPdfJs();
+      const r = await fetch(url); if(!r.ok) throw new Error('Could not download the PDF (' + r.status + ')');
+      const pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(await r.arrayBuffer()) }).promise;
+      const holder = document.createElement('div'); holder.className = 'viewer-pdf';
+      const targetW = Math.min(window.innerWidth, 900) * Math.min(window.devicePixelRatio || 2, 2.5);
+      for(let n = 1; n <= pdf.numPages; n++){
+        const page = await pdf.getPage(n); const vp0 = page.getViewport({ scale: 1 }); const vp = page.getViewport({ scale: targetW / vp0.width });
+        const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+        await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+        const im = document.createElement('img'); im.src = c.toDataURL('image/jpeg', 0.88); im.className = 'wr-page-img'; holder.appendChild(im);
+      }
+      if(!v.classList.contains('open')) return;
+      body.innerHTML = ''; body.appendChild(holder);
+    } catch(e){ body.innerHTML = `<div class="viewer-msg">${escHtml(e.message || 'Could not open this PDF')}<br><button class="mini-btn" onclick="copyViewerLink('${escHtml(url)}')">Copy link</button></div>`; }
+  } else {
+    body.innerHTML = `<div class="viewer-msg">This file type cannot be shown in the app.<br><button class="mini-btn" onclick="copyViewerLink('${escHtml(url)}')">Copy link</button></div>`;
+  }
+}
+async function copyViewerLink(url){ showToast((await copyText(url)) ? 'Link copied' : 'Could not copy the link'); }
+
+function attachPinch(box, img){
+  const apply = () => { img.style.transform = `translate(${VW.x}px, ${VW.y}px) scale(${VW.s})`; };
+  let t0 = null, lastTap = 0;
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  box.ontouchstart = e => {
+    if(e.touches.length === 2){ t0 = { d: dist(e.touches), s: VW.s }; }
+    else if(e.touches.length === 1){
+      t0 = { px: e.touches[0].clientX, py: e.touches[0].clientY, x: VW.x, y: VW.y };
+      const now = Date.now();
+      if(now - lastTap < 280){ VW = VW.s > 1 ? { s: 1, x: 0, y: 0 } : { s: 2.5, x: 0, y: 0 }; apply(); }
+      lastTap = now;
+    }
+  };
+  box.ontouchmove = e => {
+    if(!t0) return;
+    if(e.touches.length === 2 && t0.d){ VW.s = Math.min(6, Math.max(1, t0.s * dist(e.touches) / t0.d)); if(VW.s === 1){ VW.x = 0; VW.y = 0; } apply(); e.preventDefault(); }
+    else if(e.touches.length === 1 && VW.s > 1 && t0.px !== undefined){ VW.x = t0.x + (e.touches[0].clientX - t0.px); VW.y = t0.y + (e.touches[0].clientY - t0.py); apply(); e.preventDefault(); }
+  };
+  box.ontouchend = () => { if(VW.s <= 1){ VW.s = 1; VW.x = 0; VW.y = 0; apply(); } };
+}
+
+/* ===== LINKED JOBS (same rules as the board) ===== */
+function renderLinkedJobs(j){
+  const listEl = document.getElementById('linked-list'); if(!listEl) return;
+  const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
+  const visibleToMe = job => isAdmin || (job.assigned_to || '').trim().toLowerCase() === (CURRENT_USER.name || '').trim().toLowerCase();
+  const seen = new Set([j.id]); const links = [];
+  const add = (job, rel, unlinkFrom) => { if(!job || seen.has(job.id) || !visibleToMe(job)) return; seen.add(job.id); links.push({ job, rel, unlinkFrom }); };
+  const parent = j.parent_job_id ? JOBS.find(x => x.id === j.parent_job_id) : null;
+  add(parent, 'Parent', j.id);
+  JOBS.filter(x => x.parent_job_id === j.id).forEach(c => add(c, 'Follow-up', c.id));
+  if(j.parent_job_id) JOBS.filter(x => x.parent_job_id === j.parent_job_id).forEach(s => add(s, 'Related', null));
+  if(j.external_job_id) JOBS.filter(x => x.external_job_id && x.external_job_id === j.external_job_id).forEach(s => add(s, 'Same ticket', null));
+  if(!links.length){ listEl.innerHTML = '<div class="pf-none">No linked jobs</div>'; return; }
+  listEl.innerHTML = links.map(l => `
+    <div class="link-item" onclick="openDetail('${l.job.id}')">
+      <div class="link-main"><div class="link-rel">${escHtml(l.rel)}</div>
+        <div class="job-title">${escHtml(l.job.title || 'Untitled Job')}</div>
+        <div class="job-ref">${escHtml(l.job.ref)} &middot; ${escHtml(l.job.status)}</div></div>
+      ${(isAdmin && l.unlinkFrom) ? `<button class="pf-del static" onclick="event.stopPropagation();unlinkJob('${l.unlinkFrom}')" aria-label="Unlink">&times;</button>` : ''}
+    </div>`).join('');
+}
+async function linkJobFromInput(){
+  const input = document.getElementById('link-job-input'); const raw = (input.value || '').trim().toUpperCase();
+  if(!raw) return;
+  const ref = /^\d+$/.test(raw) ? 'JOB-' + raw : raw;
+  const j = JOBS.find(x => x.id === currentDetailId); const target = JOBS.find(x => (x.ref || '').toUpperCase() === ref);
+  if(!j) return;
+  if(!target){ showToast('No job found with reference ' + ref); return; }
+  if(target.id === j.id){ showToast('A job cannot be linked to itself'); return; }
+  let cursor = target, guard = 0;
+  while(cursor && cursor.parent_job_id && guard++ < 50){
+    if(cursor.parent_job_id === j.id){ showToast(target.ref + ' is already a follow-up of this job'); return; }
+    cursor = JOBS.find(x => x.id === cursor.parent_job_id);
+  }
+  if(j.parent_job_id && j.parent_job_id !== target.id){
+    const cur = JOBS.find(x => x.id === j.parent_job_id);
+    if(!confirm('This job is already linked to ' + (cur ? cur.ref : 'another job') + '. Replace that link with ' + target.ref + '?')) return;
+  }
+  const { error } = await sb.from('jobs').update({ parent_job_id: target.id }).eq('id', j.id);
+  if(error){ showToast('Failed to link: ' + error.message); return; }
+  j.parent_job_id = target.id; input.value = ''; renderLinkedJobs(j);
+}
+async function unlinkJob(childId){
+  const child = JOBS.find(x => x.id === childId); if(!child) return;
+  if(!confirm('Remove the link on ' + child.ref + '?')) return;
+  const { error } = await sb.from('jobs').update({ parent_job_id: null }).eq('id', childId);
+  if(error){ showToast('Failed to unlink: ' + error.message); return; }
+  child.parent_job_id = null;
+  const j = JOBS.find(x => x.id === currentDetailId); if(j) renderLinkedJobs(j);
+}
 
 /* ===== INIT ===== */
 boot();
