@@ -266,7 +266,7 @@ function getVisibleJobs(){
     if(activeAssignedFilter && (j.assigned_to||'') !== activeAssignedFilter) return false;
     if(activeTechFilter && (j.tech||'').trim().toLowerCase() !== activeTechFilter.trim().toLowerCase()) return false;
     if(q){
-      const hay = [j.ref, j.address, j.tenant, j.tech, j.assigned_to, j.title, j.description].filter(Boolean).join(' ').toLowerCase();
+      const hay = [j.ref, j.address, j.tenant, j.tenant_phone, j.tech, j.tech_phone, j.assigned_to, j.title, j.description, j.external_job_id, j.category].filter(Boolean).join(' ').toLowerCase();
       if(!hay.includes(q)) return false;
     }
     return true;
@@ -312,40 +312,63 @@ function getVisibleJobsIgnoringFilters(){
 function personRow(kind, p){
   const active = kind === 'team' ? activeAssignedFilter === p.name : activeTechFilter === p.name;
   const phone = p.phone ? `<a class="tr-phone" href="${telLink(p.phone)}" onclick="event.stopPropagation()">${escHtml(p.phone)}</a>` : '';
+  const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
+  const extra = kind === 'tech' ? `
+        ${p.specialty ? `<span class="tr-chip">${escHtml(p.specialty)}</span>` : ''}
+        ${p.areas ? `<div class="tr-sub">&#128205; ${escHtml(p.areas)}</div>` : ''}
+        ${p.notes ? `<div class="tr-notes">${escHtml(p.notes)}</div>` : ''}` : '';
   return `
     <div class="team-row ${active?'active':''}" onclick="pickPerson('${kind}','${escHtml(p.name).replace(/'/g,"\\'")}')">
-      <div>
+      <div style="min-width:0;flex:1;">
         <div class="tr-name">${escHtml(p.name)}</div>
-        ${phone}
+        ${phone}${extra}
       </div>
+      ${(kind === 'tech' && isAdmin) ? `<button class="tr-edit" onclick="event.stopPropagation();openTechForm('${p.id}')" aria-label="Edit technician">&#9998;</button>` : ''}
       <div class="tr-count">${countFor(kind, p.name)}</div>
     </div>`;
 }
-function openTeamSheet(mode){
-  mode = mode || 'team';
+let sheetMode = 'team';
+function sheetMatch(kind, p, q){
+  if(!q) return true;
+  const fields = kind === 'tech' ? [p.name, p.phone, p.specialty, p.areas, p.notes] : [p.name, p.phone];
+  return fields.some(v => (v || '').toLowerCase().includes(q));
+}
+function renderSheetList(){
+  const mode = sheetMode;
+  const q = ((document.getElementById('sheet-search') || {}).value || '').toLowerCase().trim();
   const list = document.getElementById('team-list');
+  const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
+  const byName = (a, b) => (a.name || '').localeCompare(b.name || '');
+  const teams = teamMembers.filter(t => sheetMatch('team', t, q)).sort(byName);
+  const techs = technicians.filter(t => sheetMatch('tech', t, q)).sort(byName);
   let html = '';
   if(mode === 'filter'){
     document.getElementById('sheet-title').textContent = 'Filter';
     html += `<div class="sheet-section">Team member</div>`;
     html += `<div class="team-row-all" onclick="pickPerson('team','')">Everyone (${getVisibleJobsIgnoringFilters().length})</div>`;
-    html += teamMembers.map(t => personRow('team', t)).join('');
+    html += teams.map(t => personRow('team', t)).join('');
     html += `<div class="sheet-section">Technician</div>`;
     html += `<div class="team-row-all" onclick="pickPerson('tech','')">All technicians</div>`;
-    html += technicians.map(t => personRow('tech', t)).join('');
+    html += techs.map(t => personRow('tech', t)).join('');
     if(activeAssignedFilter || activeTechFilter) html += `<button class="clear-filters" onclick="clearFilters()">Clear filters</button>`;
   } else if(mode === 'tech'){
     document.getElementById('sheet-title').textContent = 'Technicians';
     html += `<div class="team-row-all" onclick="pickPerson('tech','')">All technicians</div>`;
-    html += technicians.map(t => personRow('tech', t)).join('');
-    if(!technicians.length) html += `<div class="empty-state">No technicians added yet</div>`;
+    html += techs.map(t => personRow('tech', t)).join('');
+    if(!techs.length) html += `<div class="empty-state">${q ? 'No technicians match "' + escHtml(q) + '"' : 'No technicians added yet'}</div>`;
+    if(isAdmin) html += `<button class="clear-filters" onclick="openTechForm('')">+ Add technician</button>`;
   } else {
     document.getElementById('sheet-title').textContent = 'Team';
     html += `<div class="team-row-all" onclick="pickPerson('team','')">Everyone (${getVisibleJobsIgnoringFilters().length})</div>`;
-    html += teamMembers.map(t => personRow('team', t)).join('');
-    if(!teamMembers.length) html += `<div class="empty-state">No team members added yet</div>`;
+    html += teams.map(t => personRow('team', t)).join('');
+    if(!teams.length) html += `<div class="empty-state">${q ? 'No team members match "' + escHtml(q) + '"' : 'No team members added yet'}</div>`;
   }
   list.innerHTML = html;
+}
+function openTeamSheet(mode){
+  sheetMode = mode || 'team';
+  const s = document.getElementById('sheet-search'); if(s) s.value = '';
+  renderSheetList();
   document.getElementById('team-sheet').classList.add('open');
   document.getElementById('team-backdrop').classList.add('show');
 }
@@ -819,6 +842,7 @@ function switchDetailTab(tab){
 }
 
 window.onBack = function(){
+  if(document.getElementById('tech-form-screen').classList.contains('open')){ closeTechForm(); return 'false'; }
   if(document.getElementById('viewer-screen').classList.contains('open')){ closeViewer(); return 'false'; }
   if(document.getElementById('wr-preview-screen').classList.contains('open')){ closeWrPreview(); return 'false'; }
   if(document.getElementById('wr-screen').classList.contains('open')){ closeWorkReport(); return 'false'; }
@@ -1446,6 +1470,43 @@ async function unlinkJob(childId){
   if(error){ showToast('Failed to unlink: ' + error.message); return; }
   child.parent_job_id = null;
   const j = JOBS.find(x => x.id === currentDetailId); if(j) renderLinkedJobs(j);
+}
+
+/* ===== TECHNICIAN ADD / EDIT (admin) ===== */
+let editingTechId = null;
+function openTechForm(id){
+  const t = id ? technicians.find(x => x.id === id) : null;
+  editingTechId = t ? t.id : null;
+  document.getElementById('tf-title').textContent = t ? 'Edit Technician' : 'New Technician';
+  document.getElementById('tf-name').value = (t && t.name) || '';
+  document.getElementById('tf-phone').value = (t && t.phone) || '';
+  document.getElementById('tf-specialty').value = (t && t.specialty) || '';
+  document.getElementById('tf-areas').value = (t && t.areas) || '';
+  document.getElementById('tf-notes').value = (t && t.notes) || '';
+  document.getElementById('tf-remove').style.display = t ? '' : 'none';
+  document.getElementById('tech-form-screen').classList.add('open');
+}
+function closeTechForm(){ document.getElementById('tech-form-screen').classList.remove('open'); editingTechId = null; }
+async function saveTechForm(){
+  const name = document.getElementById('tf-name').value.trim();
+  if(!name){ showToast('Please enter a name'); return; }
+  const row = { name,
+    phone: document.getElementById('tf-phone').value.trim() || null,
+    specialty: document.getElementById('tf-specialty').value.trim() || null,
+    areas: document.getElementById('tf-areas').value.trim() || null,
+    notes: document.getElementById('tf-notes').value.trim() || null };
+  const q = editingTechId ? sb.from('technicians').update(row).eq('id', editingTechId) : sb.from('technicians').insert([row]);
+  const { error } = await q;
+  if(error){ showToast('Failed to save: ' + error.message); return; }
+  closeTechForm(); showToast('Saved');
+  await fetchTeamAndTechnicians(); renderSheetList();
+}
+async function removeTechForm(){
+  if(!editingTechId || !confirm('Remove this technician from the list?')) return;
+  const { error } = await sb.from('technicians').update({ archived_at: new Date().toISOString() }).eq('id', editingTechId);
+  if(error){ showToast('Failed: ' + error.message); return; }
+  closeTechForm(); showToast('Removed');
+  await fetchTeamAndTechnicians(); renderSheetList();
 }
 
 /* ===== INIT ===== */

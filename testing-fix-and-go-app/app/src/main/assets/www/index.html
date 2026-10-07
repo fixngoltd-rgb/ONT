@@ -80,6 +80,7 @@
     <div class="sheet-title" id="sheet-title">Team</div>
     <button class="sheet-close" onclick="closeTeamSheet()">&times;</button>
   </div>
+  <div class="sheet-search-wrap"><input id="sheet-search" type="search" placeholder="Search name, phone, specialty, area..." oninput="renderSheetList()" autocomplete="off"></div>
   <div id="team-list"></div>
 </div>
 <div class="sheet-backdrop" id="team-backdrop" onclick="closeTeamSheet()"></div>
@@ -175,6 +176,22 @@
 </div>
 
 <datalist id="tech-names-list"></datalist>
+
+<div id="tech-form-screen">
+  <div class="detail-header-bar">
+    <button class="detail-back-btn" onclick="closeTechForm()">&larr;</button>
+    <div class="ht"><div class="title" id="tf-title" style="font-size:1.05rem;">Technician</div></div>
+    <button class="save-btn" onclick="saveTechForm()">Save</button>
+  </div>
+  <div id="tech-form-body">
+    <div class="info-field"><label>Name *</label><input class="field-input" id="tf-name" placeholder="Technician name"></div>
+    <div class="info-field"><label>Phone</label><input class="field-input" id="tf-phone" type="tel" placeholder="+44..."></div>
+    <div class="info-field"><label>Specialty</label><input class="field-input" id="tf-specialty" placeholder="e.g. Plumber"></div>
+    <div class="info-field"><label>Areas covered</label><input class="field-input" id="tf-areas" placeholder="e.g. Leeds, Bolton"></div>
+    <div class="info-field"><label>Notes</label><textarea class="field-input" id="tf-notes" rows="3"></textarea></div>
+    <button class="clear-filters" id="tf-remove" style="color:var(--red);" onclick="removeTechForm()">Remove technician</button>
+  </div>
+</div>
 
 <div id="viewer-screen">
   <div class="viewer-bar"><button class="viewer-close" onclick="closeViewer()" aria-label="Close">&times;</button><div id="viewer-title"></div></div>
