@@ -810,6 +810,7 @@ function switchDetailTab(tab){
 }
 
 window.onBack = function(){
+  if(document.getElementById('wr-preview-screen').classList.contains('open')){ closeWrPreview(); return 'false'; }
   if(document.getElementById('wr-screen').classList.contains('open')){ closeWorkReport(); return 'false'; }
   if(document.getElementById('newjob-screen').classList.contains('open')){
     closeNewJobScreen();
@@ -1170,16 +1171,59 @@ function toggleWrPhoto(i){
   if(p.selected){ WR_PHOTOS.splice(i, 1); WR_PHOTOS.push(p); }
   renderWrPhotos();
 }
+let WR_BLOB = null, WR_BLOB_NAME = '';
+async function buildWrBlob(){
+  const j = JOBS.find(x => x.id === currentDetailId); if(!j) throw new Error('No job open');
+  await saveWorkReportText();
+  await loadWrLib();
+  const photos = WR_PHOTOS.filter(p => p.selected).map(p => p.url);
+  WR_BLOB = await window.WorkReport.makePdf({ address: j.address, text: document.getElementById('wr-text').value, photos });
+  WR_BLOB_NAME = (j.address || j.ref).replace(/[\\/:*?"<>|]+/g, '').trim() + '.pdf';
+  return WR_BLOB;
+}
+
+/* In-app preview: a phone WebView cannot show a PDF, so each page is drawn as a picture (pdf.js). */
+async function loadPdfJs(){
+  if(window.pdfjsLib) return;
+  const base = window.WR_BASE || WR_REMOTE_BASE;
+  const get = async n => { const r = await fetch(base + n); if(!r.ok) throw new Error('Could not download the preview tools (' + r.status + ')'); return r.text(); };
+  const lib = await get('pdf.min.js');
+  const s = document.createElement('script'); s.textContent = lib; document.head.appendChild(s);
+  const worker = await get('pdf.worker.min.js');
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([worker], { type: 'application/javascript' }));
+}
+async function previewWorkReport(){
+  const st = document.getElementById('wr-status'); const btns = ['wr-preview-btn','wr-make-btn'].map(i => document.getElementById(i));
+  btns.forEach(b => b.disabled = true); st.className = 'wr-status'; st.textContent = 'Building the preview...';
+  try {
+    const blob = await buildWrBlob();
+    await loadPdfJs();
+    const pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+    const holder = document.getElementById('wr-pages'); holder.innerHTML = '';
+    const targetW = Math.min(window.innerWidth, 900) * Math.min(window.devicePixelRatio || 2, 2.5);
+    for(let n = 1; n <= pdf.numPages; n++){
+      const page = await pdf.getPage(n);
+      const vp0 = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: targetW / vp0.width });
+      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+      await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      const img = document.createElement('img'); img.src = c.toDataURL('image/jpeg', 0.88); img.className = 'wr-page-img';
+      holder.appendChild(img);
+    }
+    document.getElementById('wr-preview-screen').classList.add('open');
+    st.textContent = '';
+  } catch(e){ st.className = 'wr-status err'; st.textContent = e.message || String(e); }
+  btns.forEach(b => b.disabled = false);
+}
+function closeWrPreview(){ document.getElementById('wr-preview-screen').classList.remove('open'); }
+
 async function makeWorkReport(){
   const j = JOBS.find(x => x.id === currentDetailId); if(!j) return;
-  const st = document.getElementById('wr-status'); const btn = document.getElementById('wr-make-btn');
-  btn.disabled = true; st.className = 'wr-status'; st.textContent = 'Building the PDF...';
+  const st = document.getElementById('wr-status'); const btns = ['wr-preview-btn','wr-make-btn','wr-attach-btn'].map(i => document.getElementById(i));
+  btns.forEach(b => b && (b.disabled = true)); st.className = 'wr-status'; st.textContent = 'Building the PDF...';
   try {
-    await saveWorkReportText();
-    await loadWrLib();
-    const photos = WR_PHOTOS.filter(p => p.selected).map(p => p.url);
-    const blob = await window.WorkReport.makePdf({ address: j.address, text: document.getElementById('wr-text').value, photos });
-    const fname = (j.address || j.ref).replace(/[\\/:*?"<>|]+/g, '').trim() + '.pdf';
+    const blob = await buildWrBlob();
+    const fname = WR_BLOB_NAME;
     const filePath = `${j.id}/${Date.now()}_${fname}`;
     const { error: upErr } = await sb.storage.from('job-files').upload(filePath, blob, { contentType: 'application/pdf' });
     if(upErr) throw new Error('Upload failed: ' + upErr.message);
@@ -1190,11 +1234,12 @@ async function makeWorkReport(){
       message: 'work report [1 attachment: ' + fname + ']', author_user_id: CURRENT_USER.id }]).select().single();
     if(!cErr && nc) await sb.from('comment_attachments').insert([{ comment_id: nc.id, file_url: urlData.publicUrl, file_name: fname, mime_type: 'application/pdf' }]);
     WR_LAST_URL = urlData.publicUrl;
+    closeWrPreview();
     document.getElementById('wr-link-row').style.display = '';
     st.className = 'wr-status ok'; st.textContent = 'Done - attached to the job as "' + fname + '".';
     loadComments(j.id);
   } catch(e){ st.className = 'wr-status err'; st.textContent = e.message || String(e); }
-  btn.disabled = false;
+  btns.forEach(b => b && (b.disabled = false));
 }
 async function copyWrLink(){
   const ok = await copyText(WR_LAST_URL);

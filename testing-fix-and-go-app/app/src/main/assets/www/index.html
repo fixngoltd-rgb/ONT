@@ -158,10 +158,20 @@
     <div class="info-field"><label>Report text (saved on the job)</label>
       <textarea class="field-input" id="wr-text" rows="14" onblur="saveWorkReportText()" placeholder="No report filed yet. Ask Claude to write it, or type it here."></textarea></div>
     <div class="info-field"><label>Photos <span id="wr-photo-count"></span></label><div id="wr-photos"></div></div>
+    <button class="wr-make wr-prev" id="wr-preview-btn" onclick="previewWorkReport()">Preview</button>
     <button class="wr-make" id="wr-make-btn" onclick="makeWorkReport()">Make PDF and attach to job</button>
     <div class="wr-status" id="wr-status"></div>
     <div id="wr-link-row" style="display:none;"><button class="mini-btn" onclick="copyWrLink()">Copy PDF link</button></div>
   </div>
+</div>
+
+<div id="wr-preview-screen">
+  <div class="detail-header-bar">
+    <button class="detail-back-btn" onclick="closeWrPreview()">&larr;</button>
+    <div class="ht"><div class="title" style="font-size:1.05rem;">Preview</div></div>
+    <button class="save-btn" id="wr-attach-btn" onclick="makeWorkReport()">Attach to job</button>
+  </div>
+  <div id="wr-pages"></div>
 </div>
 
 <datalist id="tech-names-list"></datalist>

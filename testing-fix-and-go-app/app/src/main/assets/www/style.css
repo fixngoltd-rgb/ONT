@@ -441,3 +441,10 @@ html[data-theme="dark"] .status-booked { background: #10243f; color: #93c5fd; }
 html[data-theme="dark"] .status-completed { background: #0f3128; color: #6ee7b7; }
 html[data-theme="dark"] .status-revisit { background: #231a40; color: #d8b4fe; }
 html[data-theme="dark"] .status-cancelled { background: #334155; color: #cbd5e1; }
+
+#wr-preview-screen { position: fixed; inset: 0; background: #374151; z-index: 220; display: flex; flex-direction: column; transform: translateY(100%); transition: transform 0.22s ease-out; }
+#wr-preview-screen.open { transform: translateY(0); }
+#wr-pages { flex: 1; overflow: auto; padding: 10px 8px calc(30px + var(--safe-bottom)); -webkit-overflow-scrolling: touch; user-select: none; }
+.wr-page-img { display: block; width: 100%; max-width: 900px; margin: 0 auto 10px; background: white; box-shadow: 0 2px 10px rgba(0,0,0,0.35); }
+.wr-make.wr-prev { background: #e0e7ff; color: #1d4ed8; }
+html[data-theme="dark"] .wr-make.wr-prev { background: #1e3a8a; color: #dbeafe; }
