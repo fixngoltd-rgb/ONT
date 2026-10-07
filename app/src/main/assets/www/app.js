@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '19';
+const UI_VER = '20';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -581,6 +581,7 @@ views.tools = async function () {
     '<div class="sec">Add more features</div><div class="card pad"><div class="sm">Opens the router\'s original pages in here and records what each button sends, so I can build it. Passwords are hidden in the log.</div>' +
     '<div style="margin-top:14px"><button class="b soft full" id="cap">' + (canCapture ? 'Record from the old portal' : 'Needs the latest app install') + '</button></div>' +
     '<div style="margin-top:10px"><button class="b soft full" id="scan">Scan router pages</button></div><pre class="pv" id="scanout" hidden></pre><button class="b ghost sm2" id="scancp" hidden>Copy result</button></div>' +
+    '<div class="sec">Collect router details</div><div class="card pad"><div class="sm">Reads the router\'s own pages for DHCP, DNS, WAN, guest Wi-Fi, port forwarding and more, and pulls out the request names they use. Takes about a minute. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="col">Collect</button></div><div class="sm" id="colst" style="margin-top:10px"></div><pre class="pv" id="colout" hidden></pre><button class="b ghost sm2" id="colcp" hidden>Copy result</button></div>' +
     '<div class="sec">Diagnose</div><div class="card pad"><div class="sm">Tries the filter switch several ways and reports which the router accepts.</div><div style="margin-top:12px"><button class="b soft full" id="diag">Run filter diagnose</button></div><pre class="pv" id="diagout" hidden></pre><button class="b ghost sm2" id="diagcp" hidden>Copy result</button></div>' +
     '<div class="card pad"><h2>Raw request</h2>' +
     '<input class="pv" id="rp" value="/html/bbsp/common/GetLanUserDevInfo.asp" autocapitalize="off">' +
@@ -596,6 +597,36 @@ views.tools = async function () {
   $('#save').onclick = () => {
     setPref('host', $('#host').value.trim()); setPref('user', $('#user').value.trim()); setPref('pass', $('#pass').value);
     loggedIn = false; toast('Saved');
+  };
+  $('#col').onclick = async () => {
+    const b = $('#col'), st = $('#colst'), out = $('#colout'); b.disabled = true; out.hidden = false; out.textContent = '';
+    const KEEP = /cgi|RequestFile|\bx\.|\by\.|\bz\.|\bw\.|\bk\.|new\s+st\w+|new\s+\w*(Dhcp|Dns|Wan|Info)\w*\(|InternetGatewayDevice|\.asp|Parameter\.|SpecPara|HWGet|HWSet|AddSubmit|SubmitForm|enable|Enable/;
+    const seeds = ['/', '/frame.asp', '/index.asp', '/menu.asp', '/html/ssmp/common/menu.asp', '/html/ssmp/common/menu.html', '/html/ssmp/mainpage/mainpage.asp'];
+    const found = new Set(); let rep = '';
+    try {
+      for (const p of seeds) {
+        st.textContent = 'Looking for pages: ' + p;
+        try { const r = await api('GET', p, BRH); (r.body || '').replace(/["'(]((?:\/)?html\/[A-Za-z0-9_\/.-]+\.asp)/g, (_, m) => { found.add('/' + m.replace(/^\//, '')); return _; }); } catch (e) { /* skip */ }
+      }
+      const want = /dhcp|dns|wan|optic|guest|forward|portmap|mapping|dmz|reset|devmanage|deviceinfo|wlanbasic|wlanadv|lan|upnp|time|account|ddns|firewall|acl|qos|route/i;
+      let list = [...found].filter((p) => want.test(p) && !/GetLanUser|refreshTime|GetRandCount/.test(p));
+      SCAN.forEach((p) => { if (!list.includes(p)) list.push(p); });
+      list = list.slice(0, 45);
+      rep += 'PAGES FOUND IN MENU: ' + found.size + '\n' + [...found].join('\n') + '\n\n';
+      let i = 0;
+      for (const p of list) {
+        st.textContent = 'Reading ' + (++i) + ' of ' + list.length + ': ' + p;
+        let r; try { r = await api('GET', p, BRH); } catch (e) { continue; }
+        const body = r.body || '';
+        if (r.status !== 200 || body.length < 300 || /<title>\s*Waiting/i.test(body)) { rep += '## ' + p + '  [no: ' + r.status + ', ' + body.length + ']\n\n'; continue; }
+        const lines = [];
+        body.split(/\r?\n/).forEach((l) => { const t = l.trim(); if (t.length > 2 && KEEP.test(t) && !/language\[|_language\.|\.css|\.js"/i.test(t)) lines.push(t.slice(0, 230)); });
+        rep += '## ' + p + '  [' + body.length + ' bytes]\n' + lines.slice(0, 70).join('\n') + '\n\n';
+        out.textContent = rep;
+      }
+      st.textContent = 'Done. ' + rep.length + ' characters. Tap Copy.';
+    } catch (e) { st.textContent = 'Stopped: ' + (e.message || e); }
+    out.textContent = rep; b.disabled = false; const cp = $('#colcp'); cp.hidden = false; cp.onclick = () => copyText(rep);
   };
   $('#scan').onclick = async () => {
     const out = $('#scanout'); out.hidden = false; out.textContent = 'Scanning…'; let rep = '';
