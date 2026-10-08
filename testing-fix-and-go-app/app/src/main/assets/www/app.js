@@ -1194,11 +1194,29 @@ function renderWrPhotos(){
   const g = document.getElementById('wr-photos');
   const order = WR_PHOTOS.filter(p => p.selected);
   document.getElementById('wr-photo-count').textContent = '(' + order.length + ' selected, in the order you tick them)';
-  if(!WR_PHOTOS.length){ g.innerHTML = '<div class="empty-state" style="padding:16px;">No photos on this job.</div>'; return; }
+  if(!WR_PHOTOS.length){ g.innerHTML = '<div class="empty-state" style="padding:16px;">No photos yet. Use Add photos.</div>'; return; }
   g.innerHTML = WR_PHOTOS.map((p, i) => {
     const n = p.selected ? order.indexOf(p) + 1 : 0;
     return `<div class="wr-photo${p.selected ? ' on' : ''}" onclick="toggleWrPhoto(${i})"><img src="${escHtml(p.url)}">${p.selected ? `<span>${n}</span>` : ''}</div>`;
   }).join('');
+}
+async function addWrPhotos(e){
+  const files = Array.from(e.target.files || []); e.target.value = '';
+  if(!files.length || !currentDetailId) return;
+  const jobId = currentDetailId, btn = document.getElementById('wr-add-btn'); let ok = 0;
+  for(let i = 0; i < files.length; i++){
+    const f = files[i];
+    if(btn){ btn.disabled = true; btn.textContent = 'Uploading ' + (i + 1) + ' of ' + files.length + '...'; }
+    const path = `${jobId}/${Date.now()}_${i}_${f.name}`;
+    const { error: ue } = await sb.storage.from('job-files').upload(path, f);
+    if(ue){ showToast('Upload failed: ' + ue.message); continue; }
+    const url = sb.storage.from('job-files').getPublicUrl(path).data.publicUrl;
+    const { error: de } = await sb.from('job_files').insert([{ job_id: jobId, file_name: f.name, file_url: url, mime_type: f.type || 'image/jpeg' }]);
+    if(de){ showToast('Saved the photo but not its record: ' + de.message); continue; }
+    WR_PHOTOS.push({ url, name: f.name, selected: true }); ok++; renderWrPhotos();
+  }
+  if(btn){ btn.disabled = false; btn.textContent = '+ Add photos'; }
+  if(ok){ showToast(ok + ' photo' + (ok > 1 ? 's' : '') + ' added to the job'); loadJobFiles(jobId); }
 }
 function toggleWrPhoto(i){
   const p = WR_PHOTOS[i]; p.selected = !p.selected;

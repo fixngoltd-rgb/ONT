@@ -158,7 +158,9 @@
   <div id="wr-body">
     <div class="info-field"><label>Report text (saved on the job)</label>
       <textarea class="field-input" id="wr-text" rows="14" onblur="saveWorkReportText()" placeholder="No report filed yet. Ask Claude to write it, or type it here."></textarea></div>
-    <div class="info-field"><label>Photos <span id="wr-photo-count"></span></label><div id="wr-photos"></div></div>
+    <div class="info-field"><label>Photos <span id="wr-photo-count"></span></label><div id="wr-photos"></div>
+      <button class="mini-btn" id="wr-add-btn" style="margin-top:8px;" onclick="document.getElementById('wr-add-input').click()">+ Add photos</button>
+      <input type="file" id="wr-add-input" accept="image/*" multiple style="display:none;" onchange="addWrPhotos(event)"></div>
     <button class="wr-make wr-prev" id="wr-preview-btn" onclick="previewWorkReport()">Preview</button>
     <button class="wr-make" id="wr-make-btn" onclick="makeWorkReport()">Make PDF and attach to job</button>
     <div class="wr-status" id="wr-status"></div>
