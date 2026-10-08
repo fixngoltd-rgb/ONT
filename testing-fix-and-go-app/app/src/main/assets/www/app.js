@@ -114,6 +114,22 @@ function apptSortKey(j){
 }
 function todayDateStr(){ return ukDate(new Date()); }
 function isDueToday(scheduledAt){ return !!scheduledAt && ukDate(scheduledAt) === todayDateStr(); }
+
+// "New" tag: a job counts as new for 24h, and on a UK Monday back to Friday 00:00 so the weekend's jobs all show.
+function isNewJob(j){
+  const ca = j && j.created_at;
+  if(!ca || String(ca).length <= 10) return false;
+  const t = new Date(ca);
+  if(isNaN(t)) return false;
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone:'Europe/London', weekday:'short', hour:'2-digit', minute:'2-digit', hour12:false }).formatToParts(now);
+  const g = k => (parts.find(p => p.type === k) || {}).value;
+  const hrs = (parseInt(g('hour'), 10) % 24) + parseInt(g('minute'), 10) / 60;
+  const lookbackH = g('weekday') === 'Mon' ? hrs + 72 : 24;
+  return (now - t) <= lookbackH * 3600000;
+}
+function newTagHtml(j){ return isNewJob(j) ? '<span class="new-tag" title="New - came in recently">new</span>' : ''; }
+
 function daysSince(dateStr){
   if(!dateStr) return 0;
   return Math.max(0, Math.floor((new Date() - new Date(dateStr)) / 86400000));
@@ -514,7 +530,7 @@ function renderPager(){
       return `${divider}
         <div class="job-card${isMissed(j) ? ' missed' : ''}" onclick="openDetail('${j.id}','${col.key}')">
           <div class="job-main">
-            <div class="job-ref">${escHtml(j.ref)}</div>
+            <div class="job-ref">${escHtml(j.ref)}${col.key === 'awaiting_start' ? newTagHtml(j) : ''}</div>
             <div class="job-title">${escHtml(j.title || 'Untitled')}</div>
             <div class="job-address">${escHtml(j.address || '')}</div>
             ${tag}
