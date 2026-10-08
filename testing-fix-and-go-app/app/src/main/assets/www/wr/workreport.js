@@ -5,7 +5,7 @@
    Layouts (chosen automatically):
      A  1-4 photos, text fits at a good size  -> text on the left, photos in a column on the right
      B  1-4 photos, long text                  -> text full width, photos in a row underneath
-     C  5+ photos                              -> text-only first page, photo page(s) after it
+     C  5+ photos                              -> text first (plus a row of photos if there is room), then packed photo pages
    No numbers/prices are ever added. The text is exactly what is typed into the box. */
 (function(){
   const W = 1860, H = 2631;
@@ -103,6 +103,88 @@
     doc.roundedRect(x, y, w, h, 28, 28, null); doc.clip(); doc.discardPath();
     doc.addImage(p.data, 'JPEG', x, y, w, h, undefined, 'FAST');
     doc.restoreGraphicsState();
+  }
+
+  // fills the whole box (crops the overflow), rounded corners, like the hand-made reports
+  function addPhotoCover(doc, p, bx, by, bw, bh){
+    const sc = Math.max(bw / p.w, bh / p.h);
+    const w = p.w * sc, h = p.h * sc;
+    doc.saveGraphicsState();
+    doc.roundedRect(bx, by, bw, bh, 28, 28, null); doc.clip(); doc.discardPath();
+    doc.addImage(p.data, 'JPEG', bx + (bw - w) / 2, by + (bh - h) / 2, w, h, undefined, 'FAST');
+    doc.restoreGraphicsState();
+  }
+
+  /* ---------- photo page packing (5+ photos) ----------
+     Photos stay in the order chosen. Each grey page is made of rows of 1-3 tiles that fill the page width;
+     row heights are stretched so the rows fill the page height, so there is next to no empty space.
+     A small search picks, for the whole set, how many photos go on each page and how they split into rows,
+     keeping crop and empty space low and pages few (about six photos per page when they are portrait). */
+  const PG = { x: 36, y: 36, w: W - 72, h: FOOT_TOP - 72, gap: 30, maxPer: 6, pagePenalty: 5, fMin: 0.8, fMax: 1.35 };
+  function compositions(c){
+    const out = [];
+    (function rec(left, cur){ if(!left){ if(cur.length <= 3) out.push(cur.slice()); return; }
+      for(let k = 1; k <= Math.min(3, left); k++){ cur.push(k); rec(left - k, cur); cur.pop(); } })(c, []);
+    return out;
+  }
+  function layoutPage(asp, comp){
+    // asp: aspect ratios (w/h) of the photos on this page; comp: row sizes
+    let idx = 0; const rows = []; let sumH = 0;
+    comp.forEach(k => {
+      const a = asp.slice(idx, idx + k); idx += k;
+      const h = (PG.w - (k - 1) * PG.gap) / a.reduce((x, y) => x + y, 0);
+      rows.push({ k, a, h }); sumH += h;
+    });
+    const gaps = (comp.length - 1) * PG.gap;
+    const fNeed = (PG.h - gaps) / sumH;
+    const f = Math.min(PG.fMax, Math.max(PG.fMin, fNeed));
+    const used = sumH * f + gaps;
+    let cost = 0;
+    rows.forEach(r => r.a.forEach(() => { cost += Math.abs(Math.log(f)); }));
+    cost += Math.max(0, 1 - used / PG.h) * 8;
+    if(fNeed < PG.fMin) cost += 50;         // would overflow the page
+    return { rows, f, used, cost };
+  }
+  function planPages(asp){
+    const n = asp.length, best = new Array(n + 1).fill(Infinity), from = new Array(n + 1).fill(null);
+    best[0] = 0;
+    for(let i = 0; i < n; i++){
+      if(best[i] === Infinity) continue;
+      for(let c = 1; c <= Math.min(PG.maxPer, n - i); c++){
+        let top = null;
+        compositions(c).forEach(comp => { const L = layoutPage(asp.slice(i, i + c), comp); if(!top || L.cost < top.L.cost) top = { L, comp }; });
+        const total = best[i] + top.L.cost + PG.pagePenalty;
+        if(total < best[i + c]){ best[i + c] = total; from[i + c] = { i, comp: top.comp }; }
+      }
+    }
+    const pages = []; let e = n;
+    while(e > 0){ const f = from[e]; pages.unshift({ start: f.i, count: e - f.i, comp: f.comp }); e = f.i; }
+    return pages;
+  }
+  function drawPhotoPage(doc, A, photos, pg){
+    doc.addPage([W, H], 'portrait');
+    doc.setFillColor(237, 237, 237); doc.rect(0, 0, W, FOOT_TOP, 'F');
+    doc.addImage(A.foot, 'JPEG', 0, FOOT_TOP - 0.5, W, H - FOOT_TOP + 0.5, undefined, 'FAST');
+    const ph = photos.slice(pg.start, pg.start + pg.count);
+    const L = layoutPage(ph.map(p => p.w / p.h), pg.comp);
+    let y = PG.y + Math.max(0, (PG.h - L.used) / 2), idx = 0;
+    L.rows.forEach(r => {
+      const rh = r.h * L.f; let x = PG.x;
+      r.a.forEach((a, j) => { const tw = a * r.h; addPhotoCover(doc, ph[idx++], x, y, tw, rh); x += tw + PG.gap; });
+      y += rh + PG.gap;
+    });
+  }
+  // photos that fit in the free space under the text on page 1 (0 if nothing sensible fits)
+  function firstPageRow(photos, free){
+    const h = Math.min(free, 720); if(h < 380) return 0;
+    let bestK = 0, bestC = Infinity;
+    for(let k = 1; k <= Math.min(3, photos.length); k++){
+      const tw = (1740 - (k - 1) * PG.gap) / k; let worst = 0, sum = 0;
+      for(let i = 0; i < k; i++){ const d = Math.abs(Math.log((tw / h) / (photos[i].w / photos[i].h))); worst = Math.max(worst, d); sum += d; }
+      if(worst > 0.6) continue;
+      if(sum / k < bestC){ bestC = sum / k; bestK = k; }
+    }
+    return bestK;
   }
 
   async function prepPhoto(src){
@@ -204,17 +286,31 @@
       }
     }
     if(!layout){
-      // C: text only on page 1 (full width), photos on following grey page(s)
-      const c = fit(doc, blocks, 1740, avail, MAX_SZ, 16);
+      // C: text on page 1 (full width), then as many photos as fit under it, then full grey photo pages
+      let c = fit(doc, blocks, 1740, avail, MAX_SZ, 16);
       if(!c) throw new Error('The report text is too long to fit on one page.');
       layout = 'C';
+      let k = 0;
+      if(N > 4){
+        // prefer the biggest text size that still leaves room for a row of photos under it
+        for(let sz = c.sz; sz >= 30; sz -= 1){
+          const f = flow(doc, blocks, sz, 1740);
+          if(f.height > avail) continue;
+          const kk = firstPageRow(photos, TEXT_BOTTOM - (TEXT_TOP + f.height) - 40);
+          if(kk){ c = { sz, f }; k = kk; break; }
+        }
+      }
       drawText(doc, c.f, c.sz, 58, TEXT_TOP);
-      for(let i = 0; i < N; i += 6){
-        doc.addPage([W, H], 'portrait');
-        doc.setFillColor(237, 237, 237); doc.rect(0, 0, W, FOOT_TOP, 'F');
-        doc.addImage(A.foot, 'JPEG', 0, FOOT_TOP - 0.5, W, H - FOOT_TOP + 0.5, undefined, 'FAST');
-        const chunk = photos.slice(i, i + 6), cw = 726, ch = 700, gx = 36, gy = 36, x0 = (W - (2 * cw + gx)) / 2, y0 = 100;
-        chunk.forEach((p, j) => addPhoto(doc, p, x0 + (j % 2) * (cw + gx), y0 + Math.floor(j / 2) * (ch + gy), cw, ch, 'middle'));
+      let rest = photos;
+      const free = TEXT_BOTTOM - (TEXT_TOP + c.f.height) - 40;
+      if(k){
+        const h = Math.min(free, 720), tw = (1740 - (k - 1) * PG.gap) / k;
+        const y = TEXT_TOP + c.f.height + 40 + (free - h) / 2;
+        for(let i = 0; i < k; i++) addPhotoCover(doc, photos[i], 58 + i * (tw + PG.gap), y, tw, h);
+        rest = photos.slice(k);
+      }
+      if(rest.length){
+        planPages(rest.map(p => p.w / p.h)).forEach(pg => drawPhotoPage(doc, A, rest, pg));
       }
     }
     const blob = doc.output('blob');
