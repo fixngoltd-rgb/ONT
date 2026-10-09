@@ -1163,10 +1163,10 @@ async function removeEmailLink(){
    it is needed (not at app start), so the rest of the app never depends on them. The PDF is
    attached to the job, since a phone WebView cannot save files directly. */
 const WR_REMOTE_BASE = 'https://raw.githubusercontent.com/fixngoltd-rgb/ont/main/testing-fix-and-go-app/app/src/main/assets/www/wr/';
-let WR_PHOTOS = [], WR_LAST_SAVED = '', WR_LOADING = null, WR_LAST_URL = '';
+let WR_PHOTOS = [], WR_LAST_SAVED = '', WR_LOADING = null, WR_LAST_URL = '', WR_LABELS = {};
 
 function loadWrLib(){
-  if(window.WorkReport && window.jspdf) return Promise.resolve();
+  if(window.WorkReport && window.WorkReport2 && window.jspdf) return Promise.resolve();
   if(WR_LOADING) return WR_LOADING;
   window.WR_BASE = window.WR_BASE_OVERRIDE || WR_REMOTE_BASE;
   const inject = async name => {
@@ -1174,7 +1174,7 @@ function loadWrLib(){
     if(!r.ok) throw new Error('Could not download the report tools (' + r.status + ')');
     const s = document.createElement('script'); s.textContent = await r.text(); document.head.appendChild(s);
   };
-  WR_LOADING = (async () => { await inject('jspdf.umd.min.js'); await inject('workreport.js'); })();
+  WR_LOADING = (async () => { await inject('jspdf.umd.min.js'); await inject('workreport.js'); await inject('workreport2.js'); })();
   WR_LOADING.catch(() => { WR_LOADING = null; });
   return WR_LOADING;
 }
@@ -1194,8 +1194,46 @@ async function openWorkReport(){
   const seen = new Set(); WR_PHOTOS = [];
   (files || []).filter(f => (f.mime_type || '').startsWith('image/')).forEach(f => {
     if(seen.has(f.file_url)) return; seen.add(f.file_url);
-    WR_PHOTOS.push({ url: f.file_url, name: f.file_name, selected: true });
+    WR_PHOTOS.push({ url: f.file_url, name: f.file_name, selected: true, _t: wrPhotoTime(f), _u: f.uploaded_at || '' });
   });
+  // oldest first, newest last (capture time from the file name first, then upload time)
+  WR_PHOTOS.sort((a, b) => (a._t - b._t) || String(a._u).localeCompare(String(b._u)));
+  WR_PHOTOS.forEach((p, i) => { p._n = i + 1; });
+  WR_LABELS = {};
+  try {
+    const { data: lb, error: le } = await sb.from('job_photo_labels').select('file_url,section,tag,caption').eq('job_id', j.id);
+    if(!le) (lb || []).forEach(r => { WR_LABELS[r.file_url] = r; });
+  } catch(e){}
+  document.getElementById('wr-version').value = 'v1'; wrVersionChanged();
+  renderWrPhotos();
+}
+function wrPhotoTime(f){
+  const n = f.file_name || '';
+  let m = n.match(/(\d{4})-(\d{2})-(\d{2}) at (\d{1,2})\.(\d{2})\.(\d{2})\s*([AP]M)?(?:\s*\((\d+)\))?/i);
+  if(m){
+    let h = parseInt(m[4], 10); const ap = (m[7] || '').toUpperCase();
+    if(ap === 'PM' && h < 12) h += 12; if(ap === 'AM' && h === 12) h = 0;
+    return Date.UTC(+m[1], +m[2] - 1, +m[3], h, +m[5], +m[6]) + (m[8] ? parseInt(m[8], 10) : 0);
+  }
+  m = n.match(/(\d{4})-(\d{2})-(\d{2})[ _-]?(\d{2})(\d{2})(\d{2})/);
+  if(m) return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  m = n.match(/(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})/);
+  if(m) return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  return f.uploaded_at ? Date.parse(f.uploaded_at) : 0;
+}
+function wrVersionChanged(){
+  const v2 = document.getElementById('wr-version').value === 'v2';
+  document.getElementById('wr-date-wrap').style.display = v2 ? 'inline-flex' : 'none';
+  const d = document.getElementById('wr-date');
+  if(v2 && d && !d.value){ d.value = new Date().toLocaleDateString('en-CA', { timeZone: UK_TZ }); }
+}
+function toggleAllWrPhotos(){
+  const all = WR_PHOTOS.length && WR_PHOTOS.every(p => p.selected);
+  if(all){ WR_PHOTOS.forEach(p => p.selected = false); }
+  else {
+    WR_PHOTOS.forEach(p => p.selected = true);
+    WR_PHOTOS.sort((a, b) => ((a._t || 0) - (b._t || 0)) || String(a._u || '').localeCompare(String(b._u || '')));
+  }
   renderWrPhotos();
 }
 async function saveWorkReportText(){
@@ -1209,11 +1247,15 @@ async function closeWorkReport(){ await saveWorkReportText(); document.getElemen
 function renderWrPhotos(){
   const g = document.getElementById('wr-photos');
   const order = WR_PHOTOS.filter(p => p.selected);
-  document.getElementById('wr-photo-count').textContent = '(' + order.length + ' selected, in the order you tick them)';
+  const nLab = WR_PHOTOS.filter(p => WR_LABELS[p.url] && WR_LABELS[p.url].caption).length;
+  document.getElementById('wr-photo-count').textContent = '(' + order.length + ' selected' + (nLab ? ', ' + nLab + ' labelled' : '') + ', in the order you tick them)';
+  const allBtn = document.getElementById('wr-all-btn');
+  if(allBtn){ allBtn.textContent = (WR_PHOTOS.length && order.length === WR_PHOTOS.length) ? 'Deselect all' : 'Select all'; allBtn.style.display = WR_PHOTOS.length ? '' : 'none'; }
   if(!WR_PHOTOS.length){ g.innerHTML = '<div class="empty-state" style="padding:16px;">No photos yet. Use Add photos.</div>'; return; }
   g.innerHTML = WR_PHOTOS.map((p, i) => {
     const n = p.selected ? order.indexOf(p) + 1 : 0;
-    return `<div class="wr-photo${p.selected ? ' on' : ''}" onclick="toggleWrPhoto(${i})"><img src="${escHtml(p.url)}">${p.selected ? `<span>${n}</span>` : ''}</div>`;
+    const lab = WR_LABELS[p.url] && WR_LABELS[p.url].caption ? ' ' + escHtml(WR_LABELS[p.url].caption) : '';
+    return `<div class="wr-photo${p.selected ? ' on' : ''}" onclick="toggleWrPhoto(${i})"><img src="${escHtml(p.url)}">${p.selected ? `<span>${n}</span>` : ''}<em class="wr-cap"><b>#${p._n || ''}</b>${lab}</em></div>`;
   }).join('');
 }
 async function addWrPhotos(e){
@@ -1229,7 +1271,7 @@ async function addWrPhotos(e){
     const url = sb.storage.from('job-files').getPublicUrl(path).data.publicUrl;
     const { error: de } = await sb.from('job_files').insert([{ job_id: jobId, file_name: f.name, file_url: url, mime_type: f.type || 'image/jpeg' }]);
     if(de){ showToast('Saved the photo but not its record: ' + de.message); continue; }
-    WR_PHOTOS.push({ url, name: f.name, selected: true }); ok++; renderWrPhotos();
+    WR_PHOTOS.push({ url, name: f.name, selected: true, _n: WR_PHOTOS.reduce((m, q) => Math.max(m, q._n || 0), 0) + 1, _t: wrPhotoTime({ file_name: f.name, uploaded_at: new Date().toISOString() }), _u: new Date().toISOString() }); ok++; renderWrPhotos();
   }
   if(btn){ btn.disabled = false; btn.textContent = '+ Add photos'; }
   if(ok){ showToast(ok + ' photo' + (ok > 1 ? 's' : '') + ' added to the job'); loadJobFiles(jobId); }
@@ -1244,8 +1286,14 @@ async function buildWrBlob(){
   const j = JOBS.find(x => x.id === currentDetailId); if(!j) throw new Error('No job open');
   await saveWorkReportText();
   await loadWrLib();
-  const photos = WR_PHOTOS.filter(p => p.selected).map(p => p.url);
-  WR_BLOB = await window.WorkReport.makePdf({ address: j.address, text: document.getElementById('wr-text').value, photos });
+  const text = document.getElementById('wr-text').value;
+  if(document.getElementById('wr-version').value === 'v2'){
+    const dv = document.getElementById('wr-date').value;
+    const date = dv ? new Date(dv + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+    WR_BLOB = await window.WorkReport2.makePdf({ address: j.address, text, date, photos: WR_PHOTOS.filter(p => p.selected).map(p => Object.assign({ url: p.url }, WR_LABELS[p.url] ? { section: WR_LABELS[p.url].section || undefined, tag: WR_LABELS[p.url].tag || undefined, caption: WR_LABELS[p.url].caption || undefined } : {})) });
+  } else {
+    WR_BLOB = await window.WorkReport.makePdf({ address: j.address, text, photos: WR_PHOTOS.filter(p => p.selected).map(p => p.url) });
+  }
   WR_BLOB_NAME = (j.address || j.ref).replace(/[\\/:*?"<>|]+/g, '').trim() + '.pdf';
   return WR_BLOB;
 }
@@ -1349,17 +1397,27 @@ async function loadJobFiles(jobId){
   if(currentDetailId !== jobId) return;
   const g = document.getElementById('pf-grid'); if(!g) return;
   if(error){ g.innerHTML = '<div class="pf-none">Failed to load files.</div>'; return; }
-  JOB_FILES = data || [];
-  const cnt = document.getElementById('pf-count'); if(cnt) cnt.textContent = JOB_FILES.length ? '(' + JOB_FILES.length + ')' : '';
-  if(!JOB_FILES.length){ g.innerHTML = '<div class="pf-none">No files uploaded yet.</div>'; return; }
+  const all = data || [];
+  const cnt = document.getElementById('pf-count'); if(cnt) cnt.textContent = all.length ? '(' + all.length + ')' : '';
+  if(!all.length){ JOB_FILES = []; g.innerHTML = '<div class="pf-none">No files uploaded yet.</div>'; return; }
   const isAdmin = CURRENT_USER && CURRENT_USER.role === 'admin';
-  g.innerHTML = JOB_FILES.map((f, i) => {
-    const mime = f.mime_type || '';
-    const inner = mime.startsWith('image/') ? `<img src="${escHtml(f.file_url)}" loading="lazy">`
-      : `<span class="pf-icon">${mime.startsWith('video/') ? '&#127916;' : (mime === 'application/pdf' ? '&#128196;' : '&#128206;')}</span>`;
-    return `<div class="pf-thumb" onclick="openViewerFile(${i})">${inner}<div class="pf-name">${escHtml(f.file_name || '')}</div>
-      ${isAdmin ? `<button class="pf-del" onclick="event.stopPropagation();deleteJobFile('${f.id}')" aria-label="Delete">&times;</button>` : ''}</div>`;
+  const isImg = f => (f.mime_type || '').startsWith('image/'), isVid = f => (f.mime_type || '').startsWith('video/');
+  const docs = all.filter(f => !isImg(f) && !isVid(f)), vids = all.filter(isVid);
+  // photos oldest first, same order and numbers as the work report picker
+  const imgs = all.filter(isImg).sort((a, b) => (wrPhotoTime(a) - wrPhotoTime(b)) || String(a.uploaded_at || '').localeCompare(String(b.uploaded_at || '')));
+  JOB_FILES = docs.concat(imgs, vids);
+  const idx = f => JOB_FILES.indexOf(f);
+  const del = f => isAdmin ? `<button class="pf-del" onclick="event.stopPropagation();deleteJobFile('${f.id}')" aria-label="Delete">&times;</button>` : '';
+  const head = (label, n) => `<div class="pf-head">${label}<span>${n}</span></div>`;
+  const tile = (f, inner) => `<div class="pf-thumb" onclick="openViewerFile(${idx(f)})">${inner}<div class="pf-name">${escHtml(f.file_name || '')}</div>${del(f)}</div>`;
+  let html = '';
+  if(docs.length) html += head('Documents', docs.length) + docs.map(f => {
+    const when = f.uploaded_at ? new Date(f.uploaded_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+    return `<div class="pf-doc" onclick="openViewerFile(${idx(f)})"><span class="pf-doc-ic">${f.mime_type === 'application/pdf' ? '&#128196;' : '&#128206;'}</span><span class="pf-doc-n">${escHtml(f.file_name || '')}</span><span class="pf-doc-d">${when}</span>${isAdmin ? `<button class="pf-doc-x" onclick="event.stopPropagation();deleteJobFile('${f.id}')" aria-label="Delete">&times;</button>` : ''}</div>`;
   }).join('');
+  if(imgs.length) html += head('Photos', imgs.length) + '<div class="pf-sub">' + imgs.map(f => tile(f, `<img src="${escHtml(f.file_url)}" loading="lazy">`)).join('') + '</div>';
+  if(vids.length) html += head('Videos', vids.length) + '<div class="pf-sub">' + vids.map(f => tile(f, '<span class="pf-icon">&#127916;</span>')).join('') + '</div>';
+  g.innerHTML = html;
 }
 function openViewerFile(i){ const f = JOB_FILES[i]; if(f) openViewer(f.file_url, f.file_name || '', f.mime_type || ''); }
 

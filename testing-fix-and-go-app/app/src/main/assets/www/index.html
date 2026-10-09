@@ -158,7 +158,13 @@
   <div id="wr-body">
     <div class="info-field"><label>Report text (saved on the job)</label>
       <textarea class="field-input" id="wr-text" rows="14" onblur="saveWorkReportText()" placeholder="No report filed yet. Ask Claude to write it, or type it here."></textarea></div>
-    <div class="info-field"><label>Photos <span id="wr-photo-count"></span></label><div id="wr-photos"></div>
+    <div class="info-field"><label>Layout</label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+        <select id="wr-version" class="field-input" style="width:auto;" onchange="wrVersionChanged()"><option value="v1">V1 (current)</option><option value="v2">V2 (new)</option></select>
+        <span id="wr-date-wrap" style="display:none;align-items:center;gap:6px;"><span style="font-size:0.72rem;font-weight:800;text-transform:uppercase;color:var(--muted2);">Date completed</span><input type="date" id="wr-date" class="field-input" style="width:auto;"></span>
+      </div></div>
+    <div class="info-field"><label>Photos <span id="wr-photo-count"></span></label>
+      <button class="mini-btn" id="wr-all-btn" style="margin:2px 0 6px;" onclick="toggleAllWrPhotos()">Deselect all</button><div id="wr-photos"></div>
       <button class="mini-btn" id="wr-add-btn" style="margin-top:8px;" onclick="document.getElementById('wr-add-input').click()">+ Add photos</button>
       <input type="file" id="wr-add-input" accept="image/*" multiple style="display:none;" onchange="addWrPhotos(event)"></div>
     <button class="wr-make wr-prev" id="wr-preview-btn" onclick="previewWorkReport()">Preview</button>
