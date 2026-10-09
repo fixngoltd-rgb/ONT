@@ -4,6 +4,10 @@ import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.provider.MediaStore;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
@@ -38,6 +42,14 @@ public class MainActivity extends Activity {
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private boolean triedAssetFallback = false;
 
+    // File chooser state (WebView needs the host app to implement onShowFileChooser,
+    // otherwise every <input type=file> silently does nothing).
+    private static final int REQ_FILE = 4711;
+    private static final int REQ_CAM_PERM = 4712;
+    private ValueCallback<Uri[]> filePathCallback;
+    private WebChromeClient.FileChooserParams pendingParams;
+    private Uri cameraUri;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -56,7 +68,21 @@ public class MainActivity extends Activity {
         // it visually smears across the header during the swipe. Not needed here.
         web.setOverScrollMode(android.view.View.OVER_SCROLL_NEVER);
 
-        web.setWebChromeClient(new WebChromeClient()); // lets <input type=file capture> open the camera
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> callback, FileChooserParams params) {
+                if (filePathCallback != null) filePathCallback.onReceiveValue(null);
+                filePathCallback = callback;
+                pendingParams = params;
+                boolean camera = params.isCaptureEnabled();
+                if (camera && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAM_PERM);
+                    return true;
+                }
+                launchChooser(camera);
+                return true;
+            }
+        });
         web.setWebViewClient(new WebViewClient() {
             @Override
             public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
@@ -81,6 +107,64 @@ public class MainActivity extends Activity {
 
         loadUi();
         pool.execute(this::updateUiFromRemote);
+    }
+
+    private void launchChooser(boolean camera) {
+        try {
+            Intent pick = pendingParams.createIntent();
+            pick.putExtra(Intent.EXTRA_ALLOW_MULTIPLE,
+                    pendingParams.getMode() == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE);
+            Intent chooser;
+            if (camera) {
+                File dir = new File(getCacheDir(), "camera");
+                dir.mkdirs();
+                File photo = File.createTempFile("photo_", ".jpg", dir);
+                cameraUri = androidx.core.content.FileProvider.getUriForFile(
+                        this, getPackageName() + ".fileprovider", photo);
+                Intent cam = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                cam.putExtra(MediaStore.EXTRA_OUTPUT, cameraUri);
+                cam.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                chooser = Intent.createChooser(cam, "Add photo");
+                chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, new Intent[]{pick});
+            } else {
+                cameraUri = null;
+                chooser = pick;
+            }
+            startActivityForResult(chooser, REQ_FILE);
+        } catch (Exception e) {
+            if (filePathCallback != null) filePathCallback.onReceiveValue(null);
+            filePathCallback = null;
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        super.onRequestPermissionsResult(code, perms, results);
+        if (code == REQ_CAM_PERM && filePathCallback != null) {
+            // Granted -> camera; denied -> still let them pick a file.
+            launchChooser(results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED);
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        if (req != REQ_FILE) { super.onActivityResult(req, res, data); return; }
+        if (filePathCallback == null) return;
+        Uri[] out = null;
+        if (res == RESULT_OK) {
+            if (data != null && data.getClipData() != null) {
+                int n = data.getClipData().getItemCount();
+                out = new Uri[n];
+                for (int i = 0; i < n; i++) out[i] = data.getClipData().getItemAt(i).getUri();
+            } else if (data != null && data.getData() != null) {
+                out = new Uri[]{data.getData()};
+            } else if (cameraUri != null) {
+                out = new Uri[]{cameraUri};
+            }
+        }
+        filePathCallback.onReceiveValue(out);
+        filePathCallback = null;
+        cameraUri = null;
     }
 
     @Override
