@@ -1282,6 +1282,16 @@ function toggleWrPhoto(i){
   renderWrPhotos();
 }
 let WR_BLOB = null, WR_BLOB_NAME = '';
+/* Work report file name: "<ticket ID, or first words of the address> <what the job was> Work Report.pdf" */
+function wrFileName(j){
+  let what = String(j.title || '').split(/\s+[-–—]\s+|,|\(|:/)[0]
+    .replace(/^\s*(quotation|quote)( needed)?\s*/i, '').replace(/\b(approved|follow-?up)\b/ig, '').replace(/&/g, ' ');
+  what = what.split(/\s+/).filter(Boolean).slice(0, 3).join(' ');
+  const t = String(j.external_job_id || '').trim();
+  const lead = t || String(j.address || '').split(',')[0].trim() || j.ref;
+  return [lead, what, 'Work Report'].filter(Boolean).join(' ').replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim() + '.pdf';
+}
+
 async function buildWrBlob(){
   const j = JOBS.find(x => x.id === currentDetailId); if(!j) throw new Error('No job open');
   await saveWorkReportText();
@@ -1294,7 +1304,7 @@ async function buildWrBlob(){
   } else {
     WR_BLOB = await window.WorkReport.makePdf({ address: j.address, text, photos: WR_PHOTOS.filter(p => p.selected).map(p => p.url) });
   }
-  WR_BLOB_NAME = (j.address || j.ref).replace(/[\\/:*?"<>|]+/g, '').trim() + '.pdf';
+  WR_BLOB_NAME = wrFileName(j);
   return WR_BLOB;
 }
 
