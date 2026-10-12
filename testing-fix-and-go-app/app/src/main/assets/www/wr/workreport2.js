@@ -221,34 +221,38 @@
     // 1-4 photos and no labels: text on the left, photos in a column on the right (same idea as V1)
     const photosIn = opts.photos || [];
     const plainIn = !photosIn.some(p => p.caption || p.section);
-    let side = null;
-    const FULLW = bodyW;
+    let side = null, sideLoaded = null;
+    const FULLW = bodyW, MAXSZ = 11.5;
     if(plainIn && photosIn.length >= 1 && photosIn.length <= 4){
-      const n = photosIn.length, two = n >= 3;
-      const colW = two ? 290 : 232, gap = 10, cols = two ? 2 : 1;
-      const tw = (colW - (cols - 1) * gap) / cols;
-      const avail = LIM1 - bodyTop;
-      const rows = Math.ceil(n / cols);
-      const th = Math.min(tw * 1.4, (avail - (rows - 1) * gap) / rows);
-      side = { n, colW, cols, tw, th, gap, x: W - M - colW };
-      bodyW = W - 2 * M - colW - 22;
+      const n = photosIn.length, gap = 10, avail = LIM1 - bodyTop + 10;
+      sideLoaded = []; for(let i = 0; i < n; i++) sideLoaded.push(await loadSized(photosIn[i].url));
+      // try one and two columns; keep the option whose tiles stay closest to the photos' own shape while filling the height beside the text
+      let bestOpt = null;
+      [1, 2].forEach(cols => {
+        if(cols > n) return;
+        const colW = cols === 1 ? 232 : 290, tw = (colW - (cols - 1) * gap) / cols, nRows = Math.ceil(n / cols);
+        let rowsH = []; for(let r = 0; r < nRows; r++){ let mh = 0; for(let c = 0; c < cols; c++){ const l = sideLoaded[r * cols + c]; if(l) mh = Math.max(mh, Math.min(Math.max(tw / l.ar, tw * 0.72), tw * 1.4)); } rowsH.push(mh); }
+        const sumH = rowsH.reduce((a, b) => a + b, 0), k = Math.min(1.6, Math.max(0.6, (avail - (nRows - 1) * gap) / sumH));
+        rowsH = rowsH.map(h => h * k);
+        const total = rowsH.reduce((a, b) => a + b, 0) + (nRows - 1) * gap;
+        let mis = 0; sideLoaded.forEach((l, i) => { mis += Math.abs(Math.log((tw / rowsH[Math.floor(i / cols)]) / l.ar)); });
+        const cost = mis / n + 2.5 * Math.abs(Math.log(Math.min(total, avail) / avail)) + (total > avail + 0.5 ? 5 : 0);
+        if(!bestOpt || cost < bestOpt.cost) bestOpt = { cost, cols, colW, tw, rowsH, gap };
+      });
+      side = { n, colW: bestOpt.colW, cols: bestOpt.cols, tw: bestOpt.tw, rowsH: bestOpt.rowsH, gap, x: W - M - bestOpt.colW };
+      bodyW = W - 2 * M - bestOpt.colW - 22;
     }
     // largest size that keeps everything on page 1; otherwise the smallest size and flow onto more pages
     let chosen = 8, ok = false;
-    for(let sz = 13.5; sz >= 8; sz -= 0.25){ const r = flow(sz, 0, false); if(r.page === 1 && r.end <= LIM1){ chosen = sz; ok = true; break; } }
-    if(side && !ok){ side = null; bodyW = FULLW; for(let sz = 13.5; sz >= 8; sz -= 0.25){ const r = flow(sz, 0, false); if(r.page === 1 && r.end <= LIM1){ chosen = sz; ok = true; break; } } }
+    for(let sz = MAXSZ; sz >= 8; sz -= 0.25){ const r = flow(sz, 0, false); if(r.page === 1 && r.end <= LIM1){ chosen = sz; ok = true; break; } }
+    if(side && !ok){ side = null; bodyW = FULLW; for(let sz = MAXSZ; sz >= 8; sz -= 0.25){ const r = flow(sz, 0, false); if(r.page === 1 && r.end <= LIM1){ chosen = sz; ok = true; break; } } }
     let extra = 0;
     if(ok){ const r = flow(chosen, 0, false); extra = Math.max(0, Math.min(16, (LIM1 - r.end) / Math.max(1, rep.sections.length + 1))); }
     // terms bar goes on page 1 first so it sits behind nothing else
     doc.addImage(A.terms, 'JPEG', 0, H - termsH, W, termsH, undefined, 'FAST');
     flow(chosen, extra, true);
     if(side){
-      const loaded = []; for(let i = 0; i < side.n; i++) loaded.push(await loadSized(photosIn[i].url));
-      const ths = loaded.map(l => Math.min(Math.max(side.tw / l.ar, side.tw * 0.72), side.tw * 1.4));
-      const nRows = Math.ceil(side.n / side.cols);
-      let rowsH = []; for(let r = 0; r < nRows; r++) rowsH.push(Math.max.apply(null, ths.slice(r * side.cols, r * side.cols + side.cols)));
-      const availS = LIM1 - bodyTop, totS = rowsH.reduce((a, b2) => a + b2, 0) + (nRows - 1) * side.gap;
-      if(totS > availS){ const k = (availS - (nRows - 1) * side.gap) / (totS - (nRows - 1) * side.gap); rowsH = rowsH.map(h => h * k); }
+      const loaded = sideLoaded, rowsH = side.rowsH, nRows = rowsH.length;
       let y0 = bodyTop - 10;
       for(let r = 0; r < nRows; r++){
         for(let c = 0; c < side.cols; c++){
@@ -303,14 +307,36 @@
         let pagesRows = [];
         if(best[n] < INF){ let e = n; while(e > 0){ const st = from[e]; pagesRows.unshift(rows.slice(st, e)); e = st; } }
         else { let cur = [], used = 0; rows.forEach(r => { if(cur.length && used + r.h + GAP > AV){ pagesRows.push(cur); cur = []; used = 0; } cur.push(r); used += r.h + GAP; }); if(cur.length) pagesRows.push(cur); }
-        pagesRows.forEach((pr, pi) => {
+        // the last page often holds only a few photos: re-plan its rows (trying different row heights) so they fill the page too
+        const pagesOut = pagesRows.map(pr => ({ rows: pr, grp: items }));
+        if(pagesRows.length){
+          const lastRows = pagesRows[pagesRows.length - 1], idxs = []; lastRows.forEach(r => r.idx.forEach(q => idxs.push(q)));
+          const sub = idxs.map(q => items[q]); let bestPlan = null;
+          const m = sub.length, ars = sub.map(p => p.ar);
+          const natH = (i, k) => { let sum = 0; for(let q = i; q < i + k; q++) sum += ars[q]; return (FW - (k - 1) * GAP) / sum; };
+          const walk = (i, comp) => {
+            if(i === m){
+              const hs = comp.map(([st, k]) => natH(st, k)), sumh = hs.reduce((a, h) => a + h, 0), gaps = (comp.length - 1) * GAP;
+              const f = Math.min(1.45, Math.max(0.7, (AV - gaps) / sumh)), tot = sumh * f + gaps;
+              const cost = Math.abs(Math.log(f)) + 3 * Math.abs(Math.log(tot / AV)) + (tot > AV + 0.5 ? 5 : 0);
+              if(!bestPlan || cost < bestPlan.cost) bestPlan = { cost, rows: comp.map(([st, k], ri) => ({ idx: Array.from({ length: k }, (_, d) => st + d), h: hs[ri], full: true })) };
+              return;
+            }
+            if(comp.length >= 7) return;
+            for(let k = 1; k <= Math.min(3, m - i); k++){ comp.push([i, k]); walk(i + k, comp); comp.pop(); }
+          };
+          walk(0, []);
+          if(bestPlan) pagesOut[pagesOut.length - 1] = { rows: bestPlan.rows, grp: sub };
+        }
+        pagesOut.forEach((pg, pi) => {
+          const pr = pg.rows;
           if(pi > 0) newPage();
-          const sumh = pr.reduce((a, r) => a + r.h, 0), isLast = pi === pagesRows.length - 1;
+          const sumh = pr.reduce((a, r) => a + r.h, 0), isLast = pi === pagesOut.length - 1;
           let f = (AV - (pr.length - 1) * GAP) / sumh;
-          f = isLast ? Math.min(1, Math.max(0.85, f)) : Math.min(1.2, Math.max(0.85, f));
+          f = isLast ? Math.min(1.45, Math.max(0.7, f)) : Math.min(1.2, Math.max(0.85, f));
           const used = sumh * f + (pr.length - 1) * GAP;
-          let y = TOP + (isLast ? 0 : Math.max(0, (AV - used) / 2));
-          pr.forEach(r => { drawRow(r, items, y, f); y += r.h * f + GAP; });
+          let y = TOP + Math.max(0, (AV - used) / 2);
+          pr.forEach(r => { drawRow(r, pg.grp, y, f); y += r.h * f + GAP; });
         });
       } else {
         let py = TOP, first = true;
