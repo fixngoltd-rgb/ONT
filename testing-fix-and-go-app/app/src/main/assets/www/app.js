@@ -95,6 +95,8 @@ function ukParts(iso){
            hasTime: !(d.getUTCHours() === 0 && d.getUTCMinutes() === 0 && d.getUTCSeconds() === 0), ms: d.getTime() };
 }
 function ukDate(iso){ const p = ukParts(iso); return p ? p.date : ''; }
+// time picker: half-hour steps only (value stays HH:MM); an existing off-grid time is kept as an extra option
+function timeOptsHtml(cur){ const vals = []; for(let i = 0; i < 48; i++) vals.push(String(Math.floor(i / 2)).padStart(2, '0') + ':' + (i % 2 ? '30' : '00')); if(cur && !vals.includes(cur)){ vals.push(cur); vals.sort(); } return '<option value="">--:--</option>' + vals.map(v => '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + v + '</option>').join(''); }
 function ukTime(iso){ const p = ukParts(iso); return (p && p.hasTime) ? p.time : ''; }
 function ukToIso(dateStr, timeStr){
   if(!dateStr) return null;
@@ -735,7 +737,7 @@ function renderInfoEdit(j){
       </select>
     </div>
     <div class="info-field"><label>Appointment Date</label><input class="field-input" type="date" id="d-scheduled-input" value="${j.scheduled_at ? ukDate(j.scheduled_at) : ''}"></div>
-    <div class="info-field"><label>Appointment Time (UK, optional)</label><input class="field-input" type="time" id="d-scheduled-time-input" value="${j.scheduled_at ? ukTime(j.scheduled_at) : ''}"></div>
+    <div class="info-field"><label>Appointment Time (UK, optional)</label><select class="field-input" id="d-scheduled-time-input">${timeOptsHtml(j.scheduled_at ? ukTime(j.scheduled_at) : '')}</select></div>
     <div class="info-field"><label>Technician</label><input class="field-input" id="d-tech-input" list="tech-names-list" value="${escHtml(j.tech||'')}" placeholder="Start typing a technician name..."></div>
     <div class="info-field"><label>Technician Phone</label><input class="field-input" id="d-tech-phone-input" value="${escHtml(j.tech_phone||'')}"></div>
     <div class="info-field" id="d-assigned-wrap">
