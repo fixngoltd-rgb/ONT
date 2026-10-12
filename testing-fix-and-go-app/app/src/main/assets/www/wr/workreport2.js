@@ -36,13 +36,19 @@
   function parse(text){
     const blocks = (window.WorkReport && window.WorkReport.parseText) ? window.WorkReport.parseText(text) : [];
     let title = '', sections = [], cur = null;
+    const FIND_RE = /^(additional\s+)?(findings?|observations?|recommendations?|change of scope|additional (notes?|items?|works?))\s*(\([^)]*\))?\s*:?$/i;
     blocks.forEach(b => {
       if(b.k === 'h'){ title = titleCase(b.t.replace(/^work report\s*[-:]?\s*/i, '')); return; }
-      if(b.k === 's'){ cur = { name: b.t, items: [] }; sections.push(cur); return; }
+      if(b.k === 's' || (b.k === 'b' && FIND_RE.test(b.t.trim()))){ cur = { name: b.t.replace(/\s*:$/, ''), items: [] }; sections.push(cur); return; }
       if(!cur){ cur = { name: '', items: [] }; sections.push(cur); }
       cur.items.push(b.t);
     });
-    return { title, sections };
+    sections.forEach(sec => { if(FIND_RE.test(sec.name.trim())) sec.find = true; });
+    // findings always sit after the work done and just before the Outcome, whatever order they were typed in
+    const fs = sections.filter(x => x.find && x.items.length), rest = sections.filter(x => !x.find);
+    const oi = rest.findIndex(x => /outcome/i.test(x.name));
+    if(fs.length){ if(oi >= 0) rest.splice(oi, 0, ...fs); else rest.push(...fs); }
+    return { title, sections: rest };
   }
 
   /* ---------- photos ---------- */
@@ -177,11 +183,26 @@
         yy += tl.length * (sz + 9) + 4 + extra * 0.5;
       }
       rep.sections.forEach(sec => {
-        const kind = /outcome/i.test(sec.name) ? 'box' : (/work carried out|works? (done|completed)|completed/i.test(sec.name) ? 'tick' : 'dot');
+        const kind = sec.find ? 'find' : /outcome/i.test(sec.name) ? 'box' : (/work carried out|works? (done|completed)|completed/i.test(sec.name) ? 'tick' : 'dot');
         const hH = sz + 9;
         // keep a heading with at least its first item
         font(false, sz); const firstH = sec.items.length ? doc.splitTextToSize(sec.items[0], bodyW - 24).length * lead + 8 : 0;
-        brk(hH + firstH + (kind === 'box' ? 30 : 0));
+        if(kind !== 'find') brk(hH + firstH + (kind === 'box' ? 30 : 0));
+        if(kind === 'find'){
+          const P = 12, tSz = sz + 1, bl = sz * 1.4, gi = sz * 0.3;
+          font(false, sz);
+          const its = sec.items.map(t => doc.splitTextToSize(t, bodyW - 46));
+          const boxH = P + tSz * 0.72 + 9 + its.reduce((a, l) => a + l.length * bl, 0) + (its.length - 1) * gi + P * 0.55;
+          brk(boxH);
+          if(draw){
+            fill(C.light); stroke(C.grey); doc.setLineWidth(0.6); doc.roundedRect(M, yy, bodyW, boxH, 5, 5, 'FD');
+            font(true, tSz); ink(C.navy); doc.text('Additional Findings', M + 16, yy + P + tSz * 0.72);
+            let ly = yy + P + tSz * 0.72 + 9 + sz * 0.72;
+            its.forEach(ls => { fill(C.grey); doc.circle(M + 21, ly - sz * 0.3, 1.5, 'F'); font(false, sz); ink(C.text); ls.forEach((l, i) => doc.text(l, M + 30, ly + i * bl)); ly += ls.length * bl + gi; });
+          }
+          yy += boxH + 8 + extra * 0.5;
+          return;
+        }
         if(sec.name && kind !== 'box'){
           if(draw){ fill(C.purple); doc.rect(M, yy - sz * 0.75, 3, sz + 3, 'F'); font(true, sz + 2); ink(C.navy); doc.text(sec.name, M + 10, yy); }
           yy += hH;
