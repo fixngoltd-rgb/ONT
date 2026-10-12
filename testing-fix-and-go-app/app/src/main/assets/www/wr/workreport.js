@@ -32,7 +32,7 @@
   }
 
   /* ---------- text ---------- */
-  const SECTION_RE = /^(issues reported|work carried out|outcome)\s*(\([^)]*\))?\s*:?$/i;   // main headings, with or without a bracket note or colon
+  const SECTION_RE = /^(issues reported|work carried out|outcome|findings|recommendations|change of scope)\s*(\([^)]*\))?\s*:?$/i;   // main headings, with or without a bracket note or colon
   function parseText(raw){
     const out = [];
     String(raw || '').replace(/\r/g, '').split('\n').forEach(l0 => {
