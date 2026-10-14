@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '25';
+const UI_VER = '26';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -260,13 +260,12 @@ const left = (ts) => { const m = Math.max(1, Math.round((ts - Date.now()) / 6000
 /* ------------------------------------------------------------ network health */
 async function pingOnce() {
   const t0 = performance.now();
-  const c = new AbortController(); const to = setTimeout(() => c.abort(), 4000);
+  const c = new AbortController(); const to = setTimeout(() => c.abort(), 2500);
   try { await fetch('https://www.gstatic.com/generate_204?' + Date.now(), { mode: 'no-cors', cache: 'no-store', signal: c.signal }); return performance.now() - t0; }
   catch (e) { return null; } finally { clearTimeout(to); }
 }
 async function pingTest() {
-  const v = [];
-  for (let i = 0; i < 4; i++) { const x = await pingOnce(); if (x != null) v.push(x); }
+  const v = (await Promise.all([pingOnce(), pingOnce(), pingOnce(), pingOnce()])).filter((x) => x != null);
   if (!v.length) return { ok: false };
   const avg = v.reduce((a, b) => a + b, 0) / v.length;
   return { ok: true, ms: Math.round(avg), jitter: Math.round(Math.max(...v) - Math.min(...v)), lost: 4 - v.length };
@@ -319,19 +318,20 @@ async function speedTest(onProgress) {
 views.home = async function (alive) {
   sweepTimers().catch(() => {});
   $('#view').innerHTML = '<div class="empty"><span class="spin"></span></div>';
-  const [net, opt, devs, mf] = await Promise.all([
-    pingTest(),
+  const netP = pingTest();
+  const [opt, devs, mf] = await Promise.all([
     readOptical().catch(() => null),
     loadDevices().catch(() => []),
     api('GET', WF + 'wlanmacfilter.asp').then((r) => filterState(r.body)).catch(() => ({ on: null })),
   ]);
   if (!alive()) return;
   const hist = jget('hist', []);
-  hist.push({ t: Date.now(), rx: opt && opt.rx ? opt.rx.n : null, ms: net.ok ? net.ms : null });
+  hist.push({ t: Date.now(), rx: opt && opt.rx ? opt.rx.n : null, ms: null });
   jset('hist', hist.slice(-80));
+  const net = { ok: null };
   const rxs = hist.map((h) => h.rx).filter((x) => x != null);
   const online = devs.filter((d) => d.online).length;
-  const quality = !net.ok ? ['No internet', 'var(--bad)'] : net.ms > 150 || net.lost ? ['Unstable', 'var(--warn)'] : ['Connected', 'var(--ok)'];
+  const quality = ['Checking…', 'var(--mut)'];
   $('#sub').textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   let optHtml;
   if (opt && opt.rx) {
@@ -348,7 +348,7 @@ views.home = async function (alive) {
   }
   $('#view').innerHTML =
     '<div class="hero"><div class="lab">Internet</div><div class="big"><span class="dot" style="background:' + quality[1] + '"></span>' + quality[0] + '</div>' +
-    '<div class="s2">' + (net.ok ? net.ms + ' ms' + (net.jitter > 40 ? ' · jittery' : '') + (net.lost ? ' · ' + net.lost + ' of 4 lost' : '') : 'Checked from this phone') + '</div></div>' +
+    '<div class="s2" id="hs2">Router data loaded. Checking the internet…</div></div>' +
     '<div class="tiles"><div class="tile" data-go="devices"><div class="lab">Online</div><div class="v">' + online + '</div><div class="sm">of ' + devs.length + ' known</div></div>' +
     '<div class="tile" data-go="block"><div class="lab">Blocking</div><div class="v">' + (mf.on === null ? '—' : mf.on ? 'On' : 'Off') + '</div><div class="sm">' + (mf.on ? (mf.mode === '1' ? 'allowlist' : 'blocklist') : 'filter') + '</div></div></div>' +
     optHtml +
@@ -356,6 +356,14 @@ views.home = async function (alive) {
     '<div style="margin-top:14px"><button class="b soft full" id="spdgo">Run speed test</button></div></div>' +
     '<div class="card pad"><h2>Restart</h2><div class="sm">Reboots the router. Everything is offline for about two minutes.</div><div style="margin-top:14px"><button class="b soft full" id="rb">Restart router…</button></div></div>';
   document.querySelectorAll('[data-go]').forEach((t) => { t.onclick = () => go(t.dataset.go); });
+  netP.then((n) => {
+    if (!alive()) return;
+    const big = document.querySelector('.hero .big'), s2 = $('#hs2'); if (!big || !s2) return;
+    const q = !n.ok ? ['No internet', 'var(--bad)'] : n.ms > 150 || n.lost ? ['Unstable', 'var(--warn)'] : ['Connected', 'var(--ok)'];
+    big.innerHTML = '<span class="dot" style="background:' + q[1] + '"></span>' + q[0];
+    s2.textContent = n.ok ? n.ms + ' ms' + (n.jitter > 40 ? ' · jittery' : '') + (n.lost ? ' · ' + n.lost + ' of 4 lost' : '') : 'Router works without internet; this only checks from your phone';
+    const h = jget('hist', []); if (h.length && n.ok) { h[h.length - 1].ms = n.ms; jset('hist', h); }
+  });
   $('#spdgo').onclick = async () => {
     const b = $('#spdgo'); b.disabled = true; b.textContent = 'Testing…';
     try {
