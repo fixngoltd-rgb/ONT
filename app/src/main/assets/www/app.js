@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '22';
+const UI_VER = '23';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -250,7 +250,7 @@ async function sweepTimers() {
   const due = Object.keys(t).filter((m) => t[m] <= Date.now());
   if (!due.length) return;
   for (const m of due) {
-    try { await unblockMac(m); } catch (e) { /* not in the list any more */ }
+    try { await unblockAny(m); } catch (e) { /* not in the list any more */ }
     delete t[m];
   }
   jset('timers', t);
@@ -323,7 +323,7 @@ views.home = async function (alive) {
     pingTest(),
     readOptical().catch(() => null),
     loadDevices().catch(() => []),
-    api('GET', MF + 'macfilter.asp').then((r) => filterState(r.body)).catch(() => ({ on: null })),
+    api('GET', WF + 'wlanmacfilter.asp').then((r) => filterState(r.body)).catch(() => ({ on: null })),
   ]);
   if (!alive()) return;
   const hist = jget('hist', []);
@@ -368,6 +368,83 @@ views.home = async function (alive) {
   $('#rb').onclick = restartRouter;
 };
 
+
+/* ---- Wi-Fi MAC filter: the one that controls Wi-Fi clients (names read from the router's own wlanmacfilter page) */
+const WF = '/html/bbsp/wlanmacfilter/';
+const WFR = 'RequestFile=html/bbsp/wlanmacfilter/wlanmacfilter.asp';
+const WFURL = WF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&' + WFR;
+async function loadWBlocked() {
+  const r = await api('GET', WF + 'wlanmacfilter.asp');
+  const list = [];
+  parseObjs(r.body).forEach((o) => {
+    const mac = o.f.find((x) => MAC_RE.test(x)), dom = o.f.find((x) => /WLANMacFilter\.\d+$/.test(x));
+    if (mac && dom) list.push({ mac: mac.toLowerCase(), domain: dom, f: o.f });
+  });
+  return { list, st: filterState(r.body), body: r.body };
+}
+async function wlanTargets() {
+  const l = await api('GET', '/html/amp/common/wlan_list.asp');
+  return parseObjs(l.body).filter((o) => o.type === 'stWlanInfo').map((o) => {
+    const m = /WLANConfiguration\.(\d+)$/.exec(o.f[0] || '');
+    return m ? { idx: +m[1], domain: o.f[0], ssid: o.f[2] || '', on: o.f[1] !== '0' } : null;
+  }).filter((x) => x && x.on);
+}
+// What the router wants in the SSID field is not written anywhere obvious, so try the likely forms and keep the one that sticks.
+const ssidForms = (t) => ({ domain: t.domain, ath: 'ath' + (t.idx - 1), idx: String(t.idx), name: t.ssid });
+async function wAdd(mac) {
+  const targets = await wlanTargets();
+  if (!targets.length) throw new Error('No Wi-Fi network found on the router');
+  const key = mac.toLowerCase();
+  const order = ['domain', 'ath', 'idx', 'name'];
+  const saved = pref('ssidForm', '');
+  if (saved && order.includes(saved)) order.splice(order.indexOf(saved), 1), order.unshift(saved);
+  const have = async () => (await loadWBlocked()).list.filter((x) => x.mac === key).length;
+  let before = await have(), used = '';
+  const first = targets[0];
+  for (const form of used ? [used] : order) {
+    await postForm(WF + 'add.cgi?x=InternetGatewayDevice.X_HW_Security.WLANMacFilter&' + WFR, { 'x.SourceMACAddress': mac, 'x.SSIDName': ssidForms(first)[form], 'x.Enable': '1' });
+    await sleep(1200);
+    const n = await have();
+    if (n > before) { used = form; before = n; break; }
+  }
+  if (!used) return { ok: false };
+  setPref('ssidForm', used);
+  for (const t of targets.slice(1)) {
+    await postForm(WF + 'add.cgi?x=InternetGatewayDevice.X_HW_Security.WLANMacFilter&' + WFR, { 'x.SourceMACAddress': mac, 'x.SSIDName': ssidForms(t)[used], 'x.Enable': '1' });
+    await sleep(900);
+  }
+  return { ok: true, form: used };
+}
+const wRemove = (domain) => postForm(WF + 'del.cgi?x=InternetGatewayDevice.X_HW_Security.WLANMacFilter&' + WFR, { [domain]: '' });
+async function setWFilter(mode) { // 'off' | 'block' | 'allow'
+  const f = mode === 'off' ? { 'x.WlanMacFilterRight': '0', 'x.WlanMacFilterPolicy': '0', 'x.MacFilterRight': '0' } : { 'x.WlanMacFilterRight': '1', 'x.WlanMacFilterPolicy': mode === 'allow' ? '1' : '0' };
+  await postForm(WFURL, f); await sleep(1500);
+  return filterState((await api('GET', WF + 'wlanmacfilter.asp')).body);
+}
+async function unblockAny(mac) {
+  const key = mac.toLowerCase(); let did = false;
+  const w = await loadWBlocked();
+  for (const e of w.list.filter((x) => x.mac === key)) { await wRemove(e.domain); did = true; await sleep(700); }
+  const l = await loadBlocked().catch(() => []);
+  if (l.some((x) => x.mac === key)) { await unblockMac(mac); did = true; }
+  if (!did) throw new Error('That MAC is not in either filter list');
+}
+async function blockDevice(mac, wireless) {
+  if (wireless) {
+    const w = await loadWBlocked();
+    if (!(w.st.on && w.st.mode !== '1')) { const st = await setWFilter('block'); if (!st.on) return { ok: false, on: false, why: 'filter' }; }
+    const r = await wAdd(mac);
+    const on = (await loadWBlocked()).st.on;
+    return { ok: r.ok, on };
+  }
+  const st = filterState((await api('GET', MF + 'macfilter.asp')).body);
+  if (!(st.on && st.mode === '0')) await postForm(FURL, { 'x.MacFilterPolicy': '0', 'x.MacFilterRight': '1' });
+  await blockMac(mac); await sleep(1500);
+  const ok = (await loadBlocked()).some((x) => x.mac === mac.toLowerCase());
+  return { ok, on: filterState((await api('GET', MF + 'macfilter.asp')).body).on };
+}
+const isWireless = (d) => /wireless|wifi|wi-fi|wlan|ssid/i.test([d.portType, d.port].join(' '));
+
 /* ---- DHCP reservations (request names read from the router's own dhcpstatic page) */
 const DS = '/html/bbsp/dhcpstatic/';
 const DSF = 'RequestFile=html/bbsp/dhcpstatic/dhcpstatic.asp';
@@ -401,7 +478,8 @@ async function restartRouter() {
 let devQuery = '';
 views.devices = async function (alive) {
   await sweepTimers().catch(() => {});
-  const [list, blocked] = await Promise.all([loadDevices(), loadBlocked().catch(() => [])]);
+  const [list, lanB, wlB] = await Promise.all([loadDevices(), loadBlocked().catch(() => []), loadWBlocked().then((x) => x.list).catch(() => [])]);
+  const blocked = lanB.concat(wlB);
   if (!alive()) return;
   const nicks = getNicks(), timers = jget('timers', {});
   const firstRun = !pref('seen', '');
@@ -477,18 +555,15 @@ function deviceSheet(d, isBlocked, dn) {
     try {
       const key = d.mac.toLowerCase();
       if (blocked) {
-        await unblockMac(d.mac);
+        await unblockAny(d.mac);
         const t = jget('timers', {}); delete t[key]; jset('timers', t);
         closeSheet(); toast('Unblocked'); go('devices');
       } else {
-        const st = filterState((await api('GET', MF + 'macfilter.asp')).body);
-        if (!(st.on && st.mode === '0')) await postForm(FURL, { 'x.MacFilterPolicy': '0', 'x.MacFilterRight': '1' });
-        await blockMac(d.mac);
-        await sleep(1500);
-        const ok = (await loadBlocked()).some((x) => x.mac === key);
-        const on = filterState((await api('GET', MF + 'macfilter.asp')).body).on;
-        if (ok && dur) { const t = jget('timers', {}); t[key] = Date.now() + dur * 3600000; jset('timers', t); }
-        closeSheet(); toast(ok && on ? (dur ? 'Blocked for ' + dur + ' h' : 'Blocked') : ok ? 'Added, but the filter is still off' : 'The router did not add it', 4500); go('devices');
+        const r = await blockDevice(d.mac, isWireless(d));
+        if (r.ok && dur) { const t = jget('timers', {}); t[key] = Date.now() + dur * 3600000; jset('timers', t); }
+        closeSheet();
+        toast(r.ok && r.on ? (isWireless(d) ? 'Blocked on Wi-Fi. If it still has internet, switch its Wi-Fi off and on.' : 'Blocked') : r.ok ? 'Added, but the filter is still off' : 'The router did not accept it', 6000);
+        go('devices');
       }
     } catch (e) { toast(e.message); act.disabled = false; }
   };
@@ -547,44 +622,50 @@ views.wifi = async function (alive) {
 /* ------------------------------------------------------------ blocking */
 views.block = async function (alive) {
   await sweepTimers().catch(() => {});
-  const list = await loadBlocked();
-  const page = await api('GET', MF + 'macfilter.asp');
+  const [lan, wl, lanPage] = await Promise.all([loadBlocked().catch(() => []), loadWBlocked(), api('GET', MF + 'macfilter.asp')]);
   if (!alive()) return;
-  const st = filterState(page.body), timers = jget('timers', {});
-  const mode = !st.on ? 'off' : st.mode === '1' ? 'allow' : 'block';
-  $('#sub').textContent = list.length + ' in the list';
+  const timers = jget('timers', {}), nicks = getNicks();
+  const lst = filterState(lanPage.body), wst = wl.st;
+  const modeOf = (st) => !st.on ? 'off' : st.mode === '1' ? 'allow' : 'block';
+  $('#sub').textContent = (wl.list.length + lan.length) + ' blocked';
+  const sw = (id, m) => '<div class="segc" id="' + id + '"><button data-m="off" class="' + (m === 'off' ? 'on' : '') + '">Off</button><button data-m="block" class="' + (m === 'block' ? 'on' : '') + '">Blocklist</button><button data-m="allow" class="' + (m === 'allow' ? 'on' : '') + '">Allowlist</button></div>';
+  const rows = (list, kind) => list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + PV(nicks[x.mac] || x.mac) + '</div><div class="sm">' + PV(x.mac) + (timers[x.mac] ? ' · ' + left(timers[x.mac]) : '') + '</div></div><button class="b soft sm2" data-k="' + kind + '" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Nothing blocked</div>';
   $('#view').innerHTML =
-    '<div class="card pad"><h2>Filter</h2><div class="segc" id="fsw">' +
-    '<button data-m="off" class="' + (mode === 'off' ? 'on' : '') + '">Off</button><button data-m="block" class="' + (mode === 'block' ? 'on' : '') + '">Blocklist</button><button data-m="allow" class="' + (mode === 'allow' ? 'on' : '') + '">Allowlist</button></div>' +
-    '<div class="sm" style="margin-top:12px">Blocklist: listed devices have no internet. Allowlist: only listed devices do, so be careful. The filter must be on for any blocking to work.</div></div>' +
-    '<div class="sec">Blocked devices</div><div class="card">' +
-    (list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + PV(((getNicks()[x.mac]) || x.mac)) + '</div><div class="sm">' + PV(x.mac) + (timers[x.mac] ? ' · ' + left(timers[x.mac]) : '') + '</div></div>' +
-      '<button class="b soft sm2" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Nothing blocked</div>') + '</div>' +
-    '<div class="card pad"><h2>Add by MAC address</h2><input class="pv" id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off"><div style="margin-top:12px"><button class="b full" id="add">Add to list</button></div></div>';
-  document.querySelectorAll('#fsw button').forEach((b) => b.onclick = async () => {
+    '<div class="card pad"><h2>Wi-Fi filter</h2>' + sw('wsw', modeOf(wst)) +
+    '<div class="sm" style="margin-top:12px">This is the one that blocks phones and laptops on Wi-Fi. Blocklist: listed devices are cut off. Allowlist: only listed devices get in, so be careful.</div></div>' +
+    '<div class="sec">Blocked on Wi-Fi</div><div class="card">' + rows(wl.list, 'w') + '</div>' +
+    '<div class="card pad"><h2>Add by MAC address</h2><input class="pv" id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off"><div style="margin-top:12px"><button class="b full" id="add">Block on Wi-Fi</button></div></div>' +
+    '<div class="sec">Wired devices (cable)</div><div class="card pad"><h2>Cable filter</h2>' + sw('lsw', modeOf(lst)) + '<div class="sm" style="margin-top:12px">Only affects devices plugged into the router by cable.</div></div>' +
+    '<div class="card">' + rows(lan, 'l') + '</div>';
+  const swHandler = (id, wifi) => document.querySelectorAll('#' + id + ' button').forEach((b) => b.onclick = async () => {
     const m = b.dataset.m;
     if (m === 'allow' && b.dataset.c !== '1') { b.dataset.c = '1'; toast('Allowlist cuts off everyone not listed. Tap again to confirm.', 4500); return; }
-    const p = m === 'allow' ? '1' : '0', r = m === 'off' ? '0' : '1';
     try {
-      await postForm(FURL, { 'x.MacFilterPolicy': p, 'x.MacFilterRight': r });
-      await sleep(1500);
-      const after = filterState((await api('GET', MF + 'macfilter.asp')).body);
-      toast((after.on === (r === '1')) ? 'Filter is now ' + stateText(after) : 'The router did not change the filter', 4500);
+      let after;
+      if (wifi) after = await setWFilter(m);
+      else { await postForm(FURL, { 'x.MacFilterPolicy': m === 'allow' ? '1' : '0', 'x.MacFilterRight': m === 'off' ? '0' : '1' }); await sleep(1500); after = filterState((await api('GET', MF + 'macfilter.asp')).body); }
+      toast(modeOf(after) === m ? 'Filter: ' + ({ off: 'off', block: 'blocklist', allow: 'allowlist' })[m] : 'The router did not change the filter', 4500);
       go('block');
     } catch (e) { toast(e.message); }
   });
+  swHandler('wsw', true); swHandler('lsw', false);
   $('#add').onclick = async () => {
     const mac = $('#mac').value.trim();
     if (!MAC_RE.test(mac)) return toast('That is not a valid MAC address');
+    const b = $('#add'); b.disabled = true; b.textContent = 'Working…';
     try {
-      await blockMac(mac); await sleep(1500);
-      toast((await loadBlocked()).some((x) => x.mac === mac.toLowerCase()) ? 'Added' : 'The router did not add it', 4000);
+      const r = await blockDevice(mac, true);
+      toast(r.ok && r.on ? 'Blocked on Wi-Fi' : r.ok ? 'Added, but the filter is off' : 'The router did not accept it', 5000);
       go('block');
-    } catch (e) { toast(e.message); }
+    } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Block on Wi-Fi'; }
   };
   document.querySelectorAll('button[data-u]').forEach((b) => b.onclick = async () => {
     if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Sure?'; return; }
-    try { const m = list[+b.dataset.u].mac; await unblockMac(m); const t = jget('timers', {}); delete t[m]; jset('timers', t); toast('Removed'); go('block'); } catch (e) { toast(e.message); }
+    try {
+      const e = (b.dataset.k === 'w' ? wl.list : lan)[+b.dataset.u];
+      if (b.dataset.k === 'w') await wRemove(e.domain); else await unblockMac(e.mac);
+      const t = jget('timers', {}); delete t[e.mac]; jset('timers', t); toast('Removed'); go('block');
+    } catch (e) { toast(e.message); }
   });
 };
 
