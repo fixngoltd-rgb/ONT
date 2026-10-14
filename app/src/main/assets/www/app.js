@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '24';
+const UI_VER = '25';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -390,12 +390,13 @@ async function wlanTargets() {
   }).filter((x) => x && x.on);
 }
 // What the router wants in the SSID field is not written anywhere obvious, so try the likely forms and keep the one that sticks.
-const ssidForms = (t) => ({ domain: t.domain, ath: 'ath' + (t.idx - 1), idx: String(t.idx), name: t.ssid });
+// The router's own page builds this value as 'SSID-' + the network number.
+const ssidForms = (t) => ({ dash: 'SSID-' + t.idx, dash0: 'SSID-' + (t.idx - 1), domain: t.domain, ath: 'ath' + (t.idx - 1), idx: String(t.idx), name: t.ssid });
 async function wAdd(mac) {
   const targets = await wlanTargets();
   if (!targets.length) throw new Error('No Wi-Fi network found on the router');
   const key = mac.toLowerCase();
-  const order = ['domain', 'ath', 'idx', 'name'];
+  const order = ['dash', 'dash0', 'domain', 'ath', 'idx', 'name'];
   const saved = pref('ssidForm', '');
   if (saved && order.includes(saved)) order.splice(order.indexOf(saved), 1), order.unshift(saved);
   const have = async () => (await loadWBlocked()).list.filter((x) => x.mac === key).length;
