@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '23';
+const UI_VER = '24';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -692,6 +692,7 @@ views.tools = async function () {
     '<div class="sec">Reserved IPs</div><div class="card" id="rsvlist"><div class="empty"><span class="spin"></span></div></div>' +
     '<div class="sec">Collect router details</div><div class="card pad"><div class="sm">Reads the router\'s own pages for DHCP, DNS, WAN, guest Wi-Fi, port forwarding and more, and pulls out the request names they use. Takes about a minute. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="col">Collect</button></div><div class="sm" id="colst" style="margin-top:10px"></div><pre class="pv" id="colout" hidden></pre><button class="b ghost sm2" id="colcp" hidden>Copy result</button></div>' +
     '<div class="sec">DNS report</div><div class="card pad"><div class="sm">Reads the DNS parts of the DHCP and WAN pages so I can build a DNS setting.</div><div style="margin-top:12px"><button class="b soft full" id="dnscol">Collect DNS details</button></div><pre class="pv" id="dnsout" hidden></pre><button class="b ghost sm2" id="dnscp" hidden>Copy result</button></div>' +
+    '<div class="sec">Wi-Fi filter diagnose</div><div class="card pad"><div class="sm">Tries adding a test MAC to the Wi-Fi filter in several forms, shows the router\'s answer for each, then removes the test entries. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="wdiag">Run Wi-Fi filter diagnose</button></div><pre class="pv" id="wdout" hidden></pre><button class="b ghost sm2" id="wdcp" hidden>Copy result</button></div>' +
     '<div class="sec">Diagnose</div><div class="card pad"><div class="sm">Tries the filter switch several ways and reports which the router accepts.</div><div style="margin-top:12px"><button class="b soft full" id="diag">Run filter diagnose</button></div><pre class="pv" id="diagout" hidden></pre><button class="b ghost sm2" id="diagcp" hidden>Copy result</button></div>' +
     '<div class="card pad"><h2>Raw request</h2>' +
     '<input class="pv" id="rp" value="/html/bbsp/common/GetLanUserDevInfo.asp" autocapitalize="off">' +
@@ -716,6 +717,36 @@ views.tools = async function () {
       try { await unreserve(list[+b.dataset.r].domain); toast('Removed'); go('tools'); } catch (e) { toast(e.message); }
     });
   }).catch((e) => { const el = $('#rsvlist'); if (el) el.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; });
+  $('#wdiag').onclick = async () => {
+    const b = $('#wdiag'), out = $('#wdout'); b.disabled = true; out.hidden = false; let rep = '';
+    const upd = () => { out.textContent = rep; };
+    try {
+      const TEST = 'aa:bb:cc:dd:ee:01';
+      const w0 = await loadWBlocked();
+      rep += 'Filter state: ' + stateText(w0.st) + '\nEntries before: ' + w0.list.length + '\n';
+      rep += '\nPAGE LINES (SSID related):\n' + w0.body.split(/\r?\n/).filter((l) => /ssid|SSID|[Aa]th|<option|WlanInfo|stWlan|selctIndex|SSIDName/.test(l) && !/language\[/.test(l)).map((l) => l.trim().slice(0, 260)).slice(0, 40).join('\n') + '\n';
+      const tg = await wlanTargets();
+      rep += '\nWi-Fi networks seen: ' + JSON.stringify(tg) + '\n\nTRIES:\n'; upd();
+      const first = tg[0];
+      if (!first) throw new Error('no Wi-Fi network found');
+      const forms = ssidForms(first);
+      for (const k of Object.keys(forms)) {
+        for (const withEnable of [true, false]) {
+          const f = { 'x.SourceMACAddress': TEST, 'x.SSIDName': forms[k] }; if (withEnable) f['x.Enable'] = '1';
+          const r = await postForm(WF + 'add.cgi?x=InternetGatewayDevice.X_HW_Security.WLANMacFilter&' + WFR, f);
+          await sleep(1200);
+          const n = (await loadWBlocked()).list.filter((x) => x.mac === TEST).length;
+          rep += k + (withEnable ? '' : ' (no Enable)') + ' = "' + forms[k] + '": HTTP ' + r.status + ', reply "' + plain(r.body).slice(0, 100) + '", entries for test MAC: ' + n + '\n'; upd();
+          if (n) break;
+        }
+      }
+      const w1 = await loadWBlocked();
+      rep += '\nENTRIES NOW: ' + JSON.stringify(w1.list.map((x) => x.f)) + '\n';
+      for (const e of w1.list.filter((x) => x.mac === TEST)) { await wRemove(e.domain); await sleep(600); }
+      rep += 'Test entries removed.\n';
+    } catch (e) { rep += '\nStopped: ' + (e.message || e) + '\n'; }
+    upd(); b.disabled = false; const cp = $('#wdcp'); cp.hidden = false; cp.onclick = () => copyText(rep);
+  };
   $('#dnscol').onclick = async () => {
     const b = $('#dnscol'), out = $('#dnsout'); b.disabled = true; out.hidden = false; out.textContent = 'Reading…'; let rep = '';
     const K = /DNS|dns|Dns|set\.cgi|add\.cgi|addParameter|setAction|urlpara|RequestFile|Form\.|ParaData|\bm=|\bk=/;
