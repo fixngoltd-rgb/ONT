@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '29';
+const UI_VER = '30';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -698,7 +698,7 @@ views.wifi = async function (alive) {
     '<div class="sec">Share and schedule</div><div class="card pad"><button class="b soft full" id="qrb">Show QR code to join this Wi-Fi</button>' +
     '<div class="sm" style="margin:10px 0 14px">Anyone scans it with their phone camera and joins without typing the password.</div>' +
     '<div class="row" style="padding:10px 0"><div class="grow"><div class="name">Wi-Fi schedule</div><div class="sm" id="schst">Reading…</div></div><button class="sw" id="schsw" disabled></button></div>' +
-    '<div class="sm" id="schnote">When on, the router switches Wi-Fi off during the times set below.</div>' +
+    '<div class="sm" id="schnote">Read-only for now. Turning it on without times set could switch your Wi-Fi off, so the app can\'t change it until I can set the times safely.</div>' +
     '<div style="margin-top:12px"><button class="b soft sm2" id="schcol">Collect schedule details</button></div><pre class="pv" id="schout" hidden></pre><button class="b ghost sm2" id="schcp" hidden>Copy result</button></div>' +
     '<div class="sec">All networks on the router</div><div class="card">' +
     (nets.length ? nets.map((n) => '<div class="row"><div class="grow"><div class="name">' + PV(n.ssid || '(no name)') + '</div><div class="sm">' + (n.idx <= 4 ? '2.4 GHz' : '5 GHz') + ' · network ' + n.idx + '</div></div></div>').join('') : '<div class="empty">None found</div>') + '</div>' +
@@ -719,17 +719,8 @@ views.wifi = async function (alive) {
   };
   const SCH = '/html/amp/wifische/WlanSchedule.asp';
   let schOn = null;
-  const drawSch = () => { const sw = $('#schsw'); if (!sw) return; sw.classList.toggle('on', !!schOn); sw.disabled = schOn === null; $('#schst').textContent = schOn === null ? 'Could not read' : schOn ? 'On' : 'Off'; };
+  const drawSch = () => { const sw = $('#schsw'); if (!sw) return; sw.classList.toggle('on', !!schOn); sw.disabled = true; $('#schst').textContent = schOn === null ? 'Could not read' : schOn ? 'On' : 'Off'; };
   api('GET', SCH, BRH).then((r) => { const m = /var\s+wlanSchecuelEnable\s*=\s*(\d)/.exec(r.body || ''); schOn = m ? +m[1] : null; drawSch(); }).catch(() => drawSch());
-  $('#schsw').onclick = async () => {
-    const sw = $('#schsw'); if (schOn === null) return; sw.disabled = true; const nv = schOn ? 0 : 1;
-    try {
-      const r = await postForm('/html/amp/wifische/set.cgi?x=InternetGatewayDevice.LANDevice.1.X_HW_WLANShutDownCtrl&RequestFile=html/amp/wifische/WlanSchedule.asp', { 'x.Enable': String(nv) });
-      await sleep(800); const c = await api('GET', SCH, BRH); const m = /var\s+wlanSchecuelEnable\s*=\s*(\d)/.exec(c.body || ''); schOn = m ? +m[1] : schOn;
-      toast(schOn === nv ? (nv ? 'Schedule on' : 'Schedule off') : 'The router did not change it (HTTP ' + r.status + ')', 3500);
-    } catch (e) { toast(e.message); }
-    drawSch();
-  };
   $('#schcol').onclick = async () => {
     const b = $('#schcol'), out = $('#schout'); b.disabled = true; out.hidden = false; out.textContent = 'Reading…';
     try {
