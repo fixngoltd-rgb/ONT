@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '26';
+const UI_VER = '27';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -701,6 +701,7 @@ views.tools = async function () {
     '<div class="sec">Reserved IPs</div><div class="card" id="rsvlist"><div class="empty"><span class="spin"></span></div></div>' +
     '<div class="sec">Collect router details</div><div class="card pad"><div class="sm">Reads the router\'s own pages for DHCP, DNS, WAN, guest Wi-Fi, port forwarding and more, and pulls out the request names they use. Takes about a minute. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="col">Collect</button></div><div class="sm" id="colst" style="margin-top:10px"></div><pre class="pv" id="colout" hidden></pre><button class="b ghost sm2" id="colcp" hidden>Copy result</button></div>' +
     '<div class="sec">DNS report</div><div class="card pad"><div class="sm">Reads the DNS parts of the DHCP and WAN pages so I can build a DNS setting.</div><div style="margin-top:12px"><button class="b soft full" id="dnscol">Collect DNS details</button></div><pre class="pv" id="dnsout" hidden></pre><button class="b ghost sm2" id="dnscp" hidden>Copy result</button></div>' +
+    '<div class="sec">Instant cut-off report</div><div class="card pad"><div class="sm">Reads the router\'s parental control, IP filter and related pages to find a way to cut a device off immediately. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="kcol">Collect</button></div><div class="sm" id="kst" style="margin-top:10px"></div><pre class="pv" id="kout" hidden></pre><button class="b ghost sm2" id="kcp" hidden>Copy result</button></div>' +
     '<div class="sec">Wi-Fi filter diagnose</div><div class="card pad"><div class="sm">Tries adding a test MAC to the Wi-Fi filter in several forms, shows the router\'s answer for each, then removes the test entries. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="wdiag">Run Wi-Fi filter diagnose</button></div><pre class="pv" id="wdout" hidden></pre><button class="b ghost sm2" id="wdcp" hidden>Copy result</button></div>' +
     '<div class="sec">Diagnose</div><div class="card pad"><div class="sm">Tries the filter switch several ways and reports which the router accepts.</div><div style="margin-top:12px"><button class="b soft full" id="diag">Run filter diagnose</button></div><pre class="pv" id="diagout" hidden></pre><button class="b ghost sm2" id="diagcp" hidden>Copy result</button></div>' +
     '<div class="card pad"><h2>Raw request</h2>' +
@@ -726,6 +727,28 @@ views.tools = async function () {
       try { await unreserve(list[+b.dataset.r].domain); toast('Removed'); go('tools'); } catch (e) { toast(e.message); }
     });
   }).catch((e) => { const el = $('#rsvlist'); if (el) el.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; });
+  $('#kcol').onclick = async () => {
+    const b = $('#kcol'), st = $('#kst'), out = $('#kout'); b.disabled = true; out.hidden = false; let rep = '';
+    const KEEP = /cgi|RequestFile|\bx\.|\by\.|\bz\.|new\s+st\w+|new\s+\w+\(|InternetGatewayDevice|Parameter\.|SpecPara|HWSet|Form\.|enable|Enable|[Mm]ac|MAC|Policy|Template|Filter|Parental|Internet/;
+    const paths = new Set(['/html/bbsp/parentalctrl/parentalctrlstatus.asp', '/html/bbsp/parentalctrl/parentalctrl.asp', '/html/bbsp/parentalctrl/parentalctrltemplate.asp', '/html/bbsp/ipincoming/ipincoming.asp', '/html/bbsp/ipfilter/ipfilter.asp', '/html/bbsp/ipoutgoing/ipoutgoing.asp', '/html/bbsp/urlfilter/urlfilter.asp', '/html/bbsp/qos/qos.asp', '/html/bbsp/macfilter/macfilter.asp']);
+    try {
+      for (const p of ['/', '/frame.asp', '/index.asp', '/menu.asp']) {
+        st.textContent = 'Looking for pages…';
+        try { const r = await api('GET', p, BRH); (r.body || '').replace(/["'(]((?:\/)?html\/[A-Za-z0-9_\/.-]+\.asp)/g, (_, m) => { const q = '/' + m.replace(/^\//, ''); if (/parental|filter|incoming|outgoing|qos|limit|rate|speed|band|schedule|time|restrict|block/i.test(q)) paths.add(q); return _; }); } catch (e) { /* skip */ }
+      }
+      let i = 0; const list = [...paths].slice(0, 25);
+      for (const p of list) {
+        st.textContent = 'Reading ' + (++i) + ' of ' + list.length + ': ' + p;
+        let r; try { r = await api('GET', p, BRH); } catch (e) { continue; }
+        const body = r.body || '';
+        if (r.status !== 200 || body.length < 300 || /<title>\s*Waiting/i.test(body)) { rep += '## ' + p + ' [no: ' + r.status + ', ' + body.length + ']\n\n'; continue; }
+        const L = []; body.split(/\r?\n/).forEach((l) => { const t = l.trim(); if (t.length > 2 && KEEP.test(t) && !/language\[|\.css|\.js"|<script language/i.test(t)) L.push(t.slice(0, 240)); });
+        rep += '## ' + p + ' [' + body.length + ' bytes]\n' + L.slice(0, 90).join('\n') + '\n\n'; out.textContent = rep;
+      }
+      st.textContent = 'Done. Tap Copy.';
+    } catch (e) { st.textContent = 'Stopped: ' + (e.message || e); }
+    out.textContent = rep; b.disabled = false; const cp = $('#kcp'); cp.hidden = false; cp.onclick = () => copyText(rep);
+  };
   $('#wdiag').onclick = async () => {
     const b = $('#wdiag'), out = $('#wdout'); b.disabled = true; out.hidden = false; let rep = '';
     const upd = () => { out.textContent = rep; };
