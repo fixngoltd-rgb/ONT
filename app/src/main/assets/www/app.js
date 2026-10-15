@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '30';
+const UI_VER = '31';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -243,7 +243,6 @@ async function loadDevices() {
     if (!d.name) d.name = d.other.find((x) => /[a-z]/i.test(x) && !/^[0-9a-f:.-]+$/i.test(x) && !/^(dhcp|static|lan\d*|ssid\d*|wifi)$/i.test(x)) || '';
   });
   list.forEach((d) => { d.online = /^(online|active)$/i.test(d.status); });
-  try { recordPresence(list); } catch (e) { /* history is best-effort */ }
   return list;
 }
 
@@ -341,7 +340,6 @@ function historyHtml(mac) {
     rows.slice(-8).reverse().map((r) => '<div class="kv"><span>' + fmtTime(r.s) + '</span><span>' + (r.e ? fmtDur(r.e - r.s) : 'online now') + '</span></div>').join('') +
     '<div class="sm" style="margin-top:6px">Only times while this app was open are recorded.</div>';
 }
-setInterval(() => { if (!document.hidden && loggedIn && !window.__busy) loadDevices().catch(() => {}); }, 60000);
 
 /* ------------------------------------------------------------ timed blocks */
 async function sweepTimers() {
@@ -627,9 +625,7 @@ function deviceSheet(d, isBlocked, dn) {
     '<div style="margin:10px 0 4px">' + [d.status, d.portType, d.port, d.ipType, d.devType, d.time].concat(d.other).filter(Boolean).map((x) => '<span class="chip pv">' + esc(x) + '</span>').join('') + '</div>' +
     (d.mac ? '<label>Nickname (kept on this phone)</label><div class="seg" style="flex-wrap:nowrap"><input class="pv" id="nick" value="' + esc(getNicks()[d.mac.toLowerCase()] || '') + '" placeholder="e.g. Ali\'s iPhone"><button class="b soft" id="nsave">Save</button></div>' : '') +
     (d.mac && !blocked ? '<label>Block for</label><div class="segc" id="dur"><button data-h="0" class="on">Forever</button><button data-h="1">1 h</button><button data-h="2">2 h</button><button data-h="8">8 h</button><button data-h="24">24 h</button></div>' : '') +
-    (d.mac ? '<label>Connection history</label><div class="pv">' + historyHtml(d.mac) + '</div>' : '') +
     '<div style="height:18px"></div>' +
-    (d.mac && d.ip ? '<button class="b soft full" id="rsv" style="margin-bottom:10px">Always give it ' + PV(d.ip) + '</button>' : '') +
     (d.mac ? (blocked
       ? '<button class="b soft full" id="act">Unblock this device</button>'
       : '<button class="b bad full" id="act">Block this device</button>') : '') +
@@ -644,18 +640,6 @@ function deviceSheet(d, isBlocked, dn) {
     const n = getNicks(); const v = $('#nick').value.trim();
     if (v) n[d.mac.toLowerCase()] = v; else delete n[d.mac.toLowerCase()];
     jset('nicks', n); closeSheet(); toast('Saved'); go('devices');
-  };
-  const rsv = $('#rsv');
-  if (rsv) rsv.onclick = async () => {
-    rsv.disabled = true;
-    try {
-      const have = await loadReserved();
-      if (have.some((x) => x.mac === d.mac.toLowerCase())) { toast('This device already has a reserved IP', 3500); rsv.disabled = false; return; }
-      await reserveIp(d.ip, d.mac); await sleep(1500);
-      const ok = (await loadReserved()).some((x) => x.mac === d.mac.toLowerCase());
-      toast(ok ? 'Reserved. It will keep ' + d.ip : 'The router did not add it', 4500);
-    } catch (e) { toast(e.message); }
-    rsv.disabled = false;
   };
   const act = $('#act');
   if (act) act.onclick = async () => {
@@ -695,11 +679,8 @@ views.wifi = async function (alive) {
     '<label>New password (8–63 characters)</label><input class="pv" id="pw" autocapitalize="off" autocomplete="off" placeholder="Type the new password">' +
     '<div style="margin-top:18px"><button class="b full" id="go">Save changes</button></div>' +
     '<div class="sm" style="margin-top:12px">Everything on Wi-Fi, including this phone, drops and has to rejoin.</div></div>' +
-    '<div class="sec">Share and schedule</div><div class="card pad"><button class="b soft full" id="qrb">Show QR code to join this Wi-Fi</button>' +
-    '<div class="sm" style="margin:10px 0 14px">Anyone scans it with their phone camera and joins without typing the password.</div>' +
-    '<div class="row" style="padding:10px 0"><div class="grow"><div class="name">Wi-Fi schedule</div><div class="sm" id="schst">Reading…</div></div><button class="sw" id="schsw" disabled></button></div>' +
-    '<div class="sm" id="schnote">Read-only for now. Turning it on without times set could switch your Wi-Fi off, so the app can\'t change it until I can set the times safely.</div>' +
-    '<div style="margin-top:12px"><button class="b soft sm2" id="schcol">Collect schedule details</button></div><pre class="pv" id="schout" hidden></pre><button class="b ghost sm2" id="schcp" hidden>Copy result</button></div>' +
+    '<div class="sec">Share</div><div class="card pad"><button class="b soft full" id="qrb">Show QR code to join this Wi-Fi</button>' +
+    '<div class="sm" style="margin:10px 0 0">Anyone scans it with their phone camera and joins without typing the password.</div></div>' +
     '<div class="sec">All networks on the router</div><div class="card">' +
     (nets.length ? nets.map((n) => '<div class="row"><div class="grow"><div class="name">' + PV(n.ssid || '(no name)') + '</div><div class="sm">' + (n.idx <= 4 ? '2.4 GHz' : '5 GHz') + ' · network ' + n.idx + '</div></div></div>').join('') : '<div class="empty">None found</div>') + '</div>' +
     '<div class="sm" style="margin:0 8px 14px">Only the 2.4 GHz network can be edited here for now. 5 GHz and guest need one recording from the old portal (More → Record).</div>';
@@ -716,20 +697,6 @@ views.wifi = async function (alive) {
         '<div class="sm" style="margin:8px 0 14px;text-align:center">Open the camera on the other phone and point it here.</div><button class="b ghost full" id="x">Close</button>');
       $('#x').onclick = closeSheet;
     } catch (e) { toast(e.message, 4000); }
-  };
-  const SCH = '/html/amp/wifische/WlanSchedule.asp';
-  let schOn = null;
-  const drawSch = () => { const sw = $('#schsw'); if (!sw) return; sw.classList.toggle('on', !!schOn); sw.disabled = true; $('#schst').textContent = schOn === null ? 'Could not read' : schOn ? 'On' : 'Off'; };
-  api('GET', SCH, BRH).then((r) => { const m = /var\s+wlanSchecuelEnable\s*=\s*(\d)/.exec(r.body || ''); schOn = m ? +m[1] : null; drawSch(); }).catch(() => drawSch());
-  $('#schcol').onclick = async () => {
-    const b = $('#schcol'), out = $('#schout'); b.disabled = true; out.hidden = false; out.textContent = 'Reading…';
-    try {
-      const r = await api('GET', SCH, BRH); const L = (r.body || '').split(/\r?\n/); const K = /time\d?_|Time|Duration|Repeat|function |Form\.|stDuration|Day|hour|min/;
-      const keep = []; L.forEach((l, i) => { if (K.test(l) && !/language\[|\.css|<td|<input/i.test(l)) keep.push((i + 1) + ': ' + l.trim().slice(0, 240)); });
-      const rep = '## ' + SCH + ' [' + r.status + ', ' + (r.body || '').length + ' bytes]\n' + keep.slice(0, 260).join('\n');
-      out.textContent = rep; const cp = $('#schcp'); cp.hidden = false; cp.onclick = () => copyText(rep);
-    } catch (e) { out.textContent = e.message; }
-    b.disabled = false;
   };
   $('#go').onclick = async () => {
     const pw = $('#pw').value, name = $('#ssid').value.trim();
@@ -822,16 +789,16 @@ const SCAN = [
 views.tools = async function () {
   const canCapture = window.ONT && typeof ONT.openCapture === 'function';
   $('#view').innerHTML =
-    '<div class="sec">Appearance</div><div class="card pad"><div class="segc" id="thm"><button data-v="dark">Black</button><button data-v="light">Light</button><button data-v="auto">Auto</button></div></div>' +
+    '<div id="mm1"><div class="sec">Appearance</div><div class="card pad"><div class="segc" id="thm"><button data-v="dark">Black</button><button data-v="light">Light</button><button data-v="auto">Auto</button></div></div>' +
     '<div class="sec">Router</div><div class="card pad">' +
     '<label style="margin-top:0">Address</label><input class="pv" id="host" value="' + esc(pref('host', '192.168.100.1')) + '" autocapitalize="off">' +
     '<label>Username</label><input class="pv" id="user" value="' + esc(pref('user', 'root')) + '" autocapitalize="off">' +
     '<label>Password</label><input class="pv" id="pass" type="password" value="' + esc(pref('pass', 'admin')) + '">' +
-    '<div style="margin-top:16px"><button class="b full" id="save">Save</button></div></div>' +
+    '<div style="margin-top:16px"><button class="b full" id="save">Save</button></div></div></div>' +
+    '<div id="dgwrap" hidden><div style="margin:8px 0 0"><button class="b ghost" id="dback" style="padding-left:0">‹ Back</button></div><div class="sm" style="margin:0 6px 4px">Bug-testing tools for sending me results. Most only read. The two filter diagnose tools briefly add a test entry to the router\'s filter and remove it.</div>' +
     '<div class="sec">Add more features</div><div class="card pad"><div class="sm">Opens the router\'s original pages in here and records what each button sends, so I can build it. Passwords are hidden in the log.</div>' +
     '<div style="margin-top:14px"><button class="b soft full" id="cap">' + (canCapture ? 'Record from the old portal' : 'Needs the latest app install') + '</button></div>' +
     '<div style="margin-top:10px"><button class="b soft full" id="scan">Scan router pages</button></div><pre class="pv" id="scanout" hidden></pre><button class="b ghost sm2" id="scancp" hidden>Copy result</button></div>' +
-    '<div class="sec">Reserved IPs</div><div class="card" id="rsvlist"><div class="empty"><span class="spin"></span></div></div>' +
     '<div class="sec">Collect router details</div><div class="card pad"><div class="sm">Reads the router\'s own pages for DHCP, DNS, WAN, guest Wi-Fi, port forwarding and more, and pulls out the request names they use. Takes about a minute. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="col">Collect</button></div><div class="sm" id="colst" style="margin-top:10px"></div><pre class="pv" id="colout" hidden></pre><button class="b ghost sm2" id="colcp" hidden>Copy result</button></div>' +
     '<div class="sec">Router logs report</div><div class="card pad"><div class="sm">Reads the router\'s own log pages to see if they record devices joining or leaving. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="logcol">Collect router logs</button></div><pre class="pv" id="logout" hidden></pre><button class="b ghost sm2" id="logcp" hidden>Copy result</button></div>' +
     '<div class="sec">DNS report</div><div class="card pad"><div class="sm">Reads the DNS parts of the DHCP and WAN pages so I can build a DNS setting.</div><div style="margin-top:12px"><button class="b soft full" id="dnscol">Collect DNS details</button></div><pre class="pv" id="dnsout" hidden></pre><button class="b ghost sm2" id="dnscp" hidden>Copy result</button></div>' +
@@ -843,9 +810,23 @@ views.tools = async function () {
     '<div class="seg" style="margin-top:10px"><select id="rm" style="width:auto"><option>POST</option><option>GET</option></select>' +
     '<button class="b" id="rs">Send</button><button class="b soft" id="rc">Copy</button></div>' +
     '<textarea class="pv" id="rb" placeholder="Body (POST): a=1&b=2" style="margin-top:10px"></textarea><pre class="pv" id="out">—</pre></div>' +
-    '<div class="sec">App</div><div class="card pad"><div class="kv"><span>UI version</span><span>' + UI_VER + '</span></div><div class="kv"><span>Update check</span><span id="uistat" style="font-weight:500;font-size:13px">' + esc(pref('uiStatus', 'not checked yet')) + '</span></div>' +
-    '<div style="margin-top:12px" class="seg"><button class="b soft sm2" id="chk">Check for update</button><button class="b ghost sm2" id="rst">Reset UI</button></div></div>';
-  const markTheme = () => document.querySelectorAll('#thm button').forEach((b) => b.classList.toggle('on', b.dataset.v === pref('theme', 'dark')));
+    '<div class="sec">Wi-Fi schedule report</div><div class="card pad"><div class="sm">Read-only. Collects how the router\'s Wi-Fi schedule page works.</div><div style="margin-top:12px"><button class="b soft full" id="schcol">Collect schedule details</button></div><pre class="pv" id="schout" hidden></pre><button class="b ghost sm2" id="schcp" hidden>Copy result</button></div></div>' +
+    '<div id="mm2"><div class="sec">App</div><div class="card pad"><div class="kv"><span>UI version</span><span>' + UI_VER + '</span></div><div class="kv"><span>Update check</span><span id="uistat" style="font-weight:500;font-size:13px">' + esc(pref('uiStatus', 'not checked yet')) + '</span></div>' +
+    '<div style="margin-top:12px" class="seg"><button class="b soft sm2" id="chk">Check for update</button><button class="b ghost sm2" id="rst">Reset UI</button></div></div>' +
+    '<div class="card"><div class="row tap" id="dopen"><div class="grow"><div class="name">Diagnostics</div><div class="sm">Bug-testing tools</div></div><span class="chev">›</span></div></div></div>';
+  const showDiag = (on) => { $('#dgwrap').hidden = !on; $('#mm1').hidden = on; $('#mm2').hidden = on; $('#view').scrollTop = 0; };
+  $('#dopen').onclick = () => showDiag(true); $('#dback').onclick = () => showDiag(false);
+  const SCH = '/html/amp/wifische/WlanSchedule.asp';
+  $('#schcol').onclick = async () => {
+    const b = $('#schcol'), out = $('#schout'); b.disabled = true; out.hidden = false; out.textContent = 'Reading…';
+    try {
+      const r = await api('GET', SCH, BRH); const L = (r.body || '').split(/\r?\n/); const K = /time\d?_|Time|Duration|Repeat|function |Form\.|stDuration|Day|hour|min/;
+      const keep = []; L.forEach((l, i) => { if (K.test(l) && !/language\[|\.css|<td|<input/i.test(l)) keep.push((i + 1) + ': ' + l.trim().slice(0, 240)); });
+      const rep = '## ' + SCH + ' [' + r.status + ', ' + (r.body || '').length + ' bytes]\n' + keep.slice(0, 260).join('\n');
+      out.textContent = rep; const cp = $('#schcp'); cp.hidden = false; cp.onclick = () => copyText(rep);
+    } catch (e) { out.textContent = e.message; }
+    b.disabled = false;
+  };  const markTheme = () => document.querySelectorAll('#thm button').forEach((b) => b.classList.toggle('on', b.dataset.v === pref('theme', 'dark')));
   markTheme();
   document.querySelectorAll('#thm button').forEach((b) => b.onclick = () => { setPref('theme', b.dataset.v); applyTheme(); markTheme(); });
   $('#cap').onclick = () => { if (canCapture) ONT.openCapture(); else toast('Install the latest HG8347R.apk first'); };
@@ -853,14 +834,6 @@ views.tools = async function () {
     setPref('host', $('#host').value.trim()); setPref('user', $('#user').value.trim()); setPref('pass', $('#pass').value);
     loggedIn = false; toast('Saved');
   };
-  loadReserved().then((list) => {
-    const el = $('#rsvlist'); if (!el) return;
-    el.innerHTML = list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + PV(x.ip) + '</div><div class="sm">' + PV(x.mac) + '</div></div><button class="b soft sm2" data-r="' + i + '">Remove</button></div>').join('') : '<div class="empty">None. Open a device and tap "Always give it…"</div>';
-    el.querySelectorAll('button[data-r]').forEach((b) => b.onclick = async () => {
-      if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Sure?'; return; }
-      try { await unreserve(list[+b.dataset.r].domain); toast('Removed'); go('tools'); } catch (e) { toast(e.message); }
-    });
-  }).catch((e) => { const el = $('#rsvlist'); if (el) el.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; });
   $('#kcol').onclick = async () => {
     const b = $('#kcol'), st = $('#kst'), out = $('#kout'); b.disabled = true; out.hidden = false; let rep = '';
     const KEEP = /cgi|RequestFile|\bx\.|\by\.|\bz\.|new\s+st\w+|new\s+\w+\(|InternetGatewayDevice|Parameter\.|SpecPara|HWSet|Form\.|enable|Enable|[Mm]ac|MAC|Policy|Template|Filter|Parental|Internet/;
