@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '27';
+const UI_VER = '28';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -8,6 +8,78 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&':
 const MAC_RE = /^[0-9a-f]{2}([:-][0-9a-f]{2}){5}$/i;
 const IP_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
 const FORM = { 'Content-Type': 'application/x-www-form-urlencoded' };
+
+/* Minimal QR encoder (byte mode, ECC M, versions 1-10). */
+const QR = (function () {
+  const ECC = [-1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26], BLK = [-1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5];
+  const rawMods = (v) => { let r = (16 * v + 128) * v + 64; if (v >= 2) { const a = Math.floor(v / 7) + 2; r -= (25 * a - 10) * a - 55; if (v >= 7) r -= 36; } return r; };
+  const dataCw = (v) => Math.floor(rawMods(v) / 8) - ECC[v] * BLK[v];
+  function gfMul(x, y) { let z = 0; for (let i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >>> 7) * 0x11D); z ^= ((y >>> i) & 1) * x; } return z; }
+  function rsDiv(data, deg) {
+    const res = new Array(deg).fill(0); const gen = new Array(deg).fill(0); gen[deg - 1] = 1; let root = 1;
+    for (let i = 0; i < deg; i++) { for (let j = 0; j < deg; j++) { gen[j] = gfMul(gen[j], root); if (j + 1 < deg) gen[j] ^= gen[j + 1]; } root = gfMul(root, 2); }
+    for (const b of data) { const f = b ^ res.shift(); res.push(0); gen.forEach((c, i) => { res[i] ^= gfMul(c, f); }); }
+    return res;
+  }
+  function utf8(s) { return Array.from(unescape(encodeURIComponent(s)), (c) => c.charCodeAt(0)); }
+  function make(text) {
+    const bytes = utf8(text); let ver = 1;
+    for (; ver <= 10; ver++) { const cc = ver < 10 ? 8 : 16; if (4 + cc + bytes.length * 8 <= dataCw(ver) * 8) break; }
+    if (ver > 10) throw new Error('Text too long for QR');
+    const bits = []; const put = (v, n) => { for (let i = n - 1; i >= 0; i--) bits.push((v >>> i) & 1); };
+    put(4, 4); put(bytes.length, ver < 10 ? 8 : 16); bytes.forEach((b) => put(b, 8));
+    const cap = dataCw(ver) * 8; put(0, Math.min(4, cap - bits.length)); put(0, (8 - bits.length % 8) % 8);
+    for (let p = 0xEC; bits.length < cap; p ^= 0xEC ^ 0x11) put(p, 8);
+    const data = []; for (let i = 0; i < bits.length; i += 8) { let b = 0; for (let j = 0; j < 8; j++) b = (b << 1) | bits[i + j]; data.push(b); }
+    const nb = BLK[ver], ec = ECC[ver], raw = Math.floor(rawMods(ver) / 8), shortLen = Math.floor(raw / nb) - ec, nShort = nb - raw % nb;
+    const blocks = []; let k = 0;
+    for (let i = 0; i < nb; i++) { const len = shortLen + (i < nShort ? 0 : 1); const d = data.slice(k, k + len); k += len; const e = rsDiv(d, ec); if (i < nShort) d.push(0); blocks.push(d.concat(e)); }
+    const all = [];
+    for (let i = 0; i < blocks[0].length; i++) blocks.forEach((b, j) => { if (i !== shortLen || j >= nShort) all.push(b[i]); });
+    const n = ver * 4 + 17; const m = Array.from({ length: n }, () => new Array(n).fill(false)), fn = Array.from({ length: n }, () => new Array(n).fill(false));
+    const set = (x, y, d) => { m[y][x] = d; fn[y][x] = true; };
+    for (let i = 0; i < n; i++) { set(6, i, i % 2 === 0); set(i, 6, i % 2 === 0); }
+    const finder = (cx, cy) => { for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) { const d = Math.max(Math.abs(dx), Math.abs(dy)), x = cx + dx, y = cy + dy; if (x >= 0 && x < n && y >= 0 && y < n) set(x, y, d !== 2 && d !== 4); } };
+    finder(3, 3); finder(n - 4, 3); finder(3, n - 4);
+    if (ver > 1) {
+      const na = Math.floor(ver / 7) + 2, step = ver === 32 ? 26 : Math.ceil((ver * 4 + 4) / (na * 2 - 2)) * 2, pos = [6];
+      for (let p = n - 7; pos.length < na; p -= step) pos.splice(1, 0, p);
+      pos.forEach((px, i) => pos.forEach((py, j) => { if ((i === 0 && j === 0) || (i === 0 && j === na - 1) || (i === na - 1 && j === 0)) return; for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) set(px + dx, py + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1); }));
+    }
+    const fmt = (mask) => {
+      const dd = (0 << 3) | mask; let r = dd; for (let i = 0; i < 10; i++) r = (r << 1) ^ ((r >>> 9) * 0x537);
+      const bitsF = ((dd << 10) | r) ^ 0x5412; const g = (i) => ((bitsF >>> i) & 1) !== 0;
+      for (let i = 0; i <= 5; i++) set(8, i, g(i)); set(8, 7, g(6)); set(8, 8, g(7)); set(7, 8, g(8)); for (let i = 9; i < 15; i++) set(14 - i, 8, g(i));
+      for (let i = 0; i < 8; i++) set(n - 1 - i, 8, g(i)); for (let i = 8; i < 15; i++) set(8, n - 15 + i, g(i)); set(8, n - 8, true);
+    };
+    fmt(0);
+    if (ver >= 7) {
+      let r = ver; for (let i = 0; i < 12; i++) r = (r << 1) ^ ((r >>> 11) * 0x1F25); const bitsV = (ver << 12) | r;
+      for (let i = 0; i < 18; i++) { const bt = ((bitsV >>> i) & 1) !== 0, a = n - 11 + i % 3, b = Math.floor(i / 3); set(a, b, bt); set(b, a, bt); }
+    }
+    const cwBits = []; all.forEach((b) => { for (let i = 7; i >= 0; i--) cwBits.push((b >>> i) & 1); });
+    let idx = 0;
+    for (let right = n - 1; right >= 1; right -= 2) { if (right === 6) right = 5; for (let v = 0; v < n; v++) for (let j = 0; j < 2; j++) { const x = right - j, up = ((right + 1) & 2) === 0, y = up ? n - 1 - v : v; if (!fn[y][x] && idx < cwBits.length) m[y][x] = cwBits[idx++] === 1; } }
+    const apply = (mask) => { for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) { let inv; switch (mask) { case 0: inv = (x + y) % 2 === 0; break; case 1: inv = y % 2 === 0; break; case 2: inv = x % 3 === 0; break; case 3: inv = (x + y) % 3 === 0; break; case 4: inv = (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0; break; case 5: inv = x * y % 2 + x * y % 3 === 0; break; case 6: inv = (x * y % 2 + x * y % 3) % 2 === 0; break; default: inv = ((x + y) % 2 + x * y % 3) % 2 === 0; } if (!fn[y][x] && inv) m[y][x] = !m[y][x]; } };
+    const penalty = () => {
+      let p = 0;
+      for (let pass = 0; pass < 2; pass++) for (let a = 0; a < n; a++) { let run = 1; for (let b = 1; b < n; b++) { const c = pass ? m[b][a] : m[a][b], pr = pass ? m[b - 1][a] : m[a][b - 1]; if (c === pr) { run++; if (run === 5) p += 3; else if (run > 5) p++; } else run = 1; } }
+      for (let y = 0; y < n - 1; y++) for (let x = 0; x < n - 1; x++) if (m[y][x] === m[y][x + 1] && m[y][x] === m[y + 1][x] && m[y][x] === m[y + 1][x + 1]) p += 3;
+      let dark = 0; m.forEach((r) => r.forEach((c) => { if (c) dark++; })); p += (Math.ceil(Math.abs(dark * 20 - n * n * 10) / (n * n)) - 1) * 10;
+      return p;
+    };
+    let best = 0, bp = 1e9;
+    for (let mk = 0; mk < 8; mk++) { apply(mk); fmt(mk); const p = penalty(); if (p < bp) { bp = p; best = mk; } apply(mk); }
+    apply(best); fmt(best);
+    return m;
+  }
+  function svg(text, px) {
+    const m = make(text), n = m.length, q = 4; let d = '';
+    m.forEach((r, y) => r.forEach((c, x) => { if (c) d += 'M' + (x + q) + ' ' + (y + q) + 'h1v1h-1z'; }));
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + (n + 2 * q) + ' ' + (n + 2 * q) + '" width="' + (px || 240) + '" height="' + (px || 240) + '" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="' + d + '" fill="#000"/></svg>';
+  }
+  return { make, svg };
+})();
 
 /* ------------------------------------------------------------ native bridge */
 const cbs = {};
@@ -171,6 +243,7 @@ async function loadDevices() {
     if (!d.name) d.name = d.other.find((x) => /[a-z]/i.test(x) && !/^[0-9a-f:.-]+$/i.test(x) && !/^(dhcp|static|lan\d*|ssid\d*|wifi)$/i.test(x)) || '';
   });
   list.forEach((d) => { d.online = /^(online|active)$/i.test(d.status); });
+  try { recordPresence(list); } catch (e) { /* history is best-effort */ }
   return list;
 }
 
@@ -243,6 +316,32 @@ const copyText = (t) => { if (window.ONT && ONT.copy) ONT.copy(t); else if (navi
 const getNicks = () => jget('nicks', {});
 const ipNum = (ip) => (ip || '').split('.').reduce((a, x) => a * 256 + (+x || 0), 0);
 const isPrivate = (ip) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|169\.254\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(ip);
+
+
+/* ------------------------------------------------------------ connection history */
+// Recorded only while the app is open (it checks every minute). Kept on this phone.
+function recordPresence(list) {
+  const h = jget('conn', {}), now = Date.now(); let ch = false;
+  list.forEach((d) => {
+    if (!d.mac) return; const k = d.mac.toLowerCase(), a = h[k] || (h[k] = []), last = a.length ? a[a.length - 1] : null, on = d.online ? 1 : 0;
+    if (!last) { if (on) { a.push([now, 1]); ch = true; } } else if (last[1] !== on) { a.push([now, on]); if (a.length > 120) a.splice(0, a.length - 120); ch = true; }
+  });
+  if (ch) jset('conn', h);
+}
+const fmtDur = (ms) => { const m = Math.round(ms / 60000); return m < 1 ? '<1 min' : m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60 ? m % 60 + ' min' : ''); };
+const fmtTime = (ts) => { const d = new Date(ts), t = new Date(), hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); return d.toDateString() === t.toDateString() ? 'Today ' + hm : d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + hm; };
+function historyHtml(mac) {
+  const a = (jget('conn', {})[(mac || '').toLowerCase()] || []);
+  if (!a.length) return '<div class="sm">No history yet. The app records when this device joins and leaves while the app is open.</div>';
+  const rows = []; let todayMs = 0; const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+  for (let i = 0; i < a.length; i++) {
+    if (a[i][1] === 1) { const end = i + 1 < a.length ? a[i + 1][0] : Date.now(); const st = Math.max(a[i][0], t0.getTime()); if (end > st) todayMs += end - st; rows.push({ s: a[i][0], e: i + 1 < a.length ? a[i + 1][0] : 0 }); }
+  }
+  return '<div class="kv"><span>Online today</span><span>' + fmtDur(todayMs) + '</span></div>' +
+    rows.slice(-8).reverse().map((r) => '<div class="kv"><span>' + fmtTime(r.s) + '</span><span>' + (r.e ? fmtDur(r.e - r.s) : 'online now') + '</span></div>').join('') +
+    '<div class="sm" style="margin-top:6px">Only times while this app was open are recorded.</div>';
+}
+setInterval(() => { if (!document.hidden && loggedIn && !window.__busy) loadDevices().catch(() => {}); }, 60000);
 
 /* ------------------------------------------------------------ timed blocks */
 async function sweepTimers() {
@@ -528,6 +627,7 @@ function deviceSheet(d, isBlocked, dn) {
     '<div style="margin:10px 0 4px">' + [d.status, d.portType, d.port, d.ipType, d.devType, d.time].concat(d.other).filter(Boolean).map((x) => '<span class="chip pv">' + esc(x) + '</span>').join('') + '</div>' +
     (d.mac ? '<label>Nickname (kept on this phone)</label><div class="seg" style="flex-wrap:nowrap"><input class="pv" id="nick" value="' + esc(getNicks()[d.mac.toLowerCase()] || '') + '" placeholder="e.g. Ali\'s iPhone"><button class="b soft" id="nsave">Save</button></div>' : '') +
     (d.mac && !blocked ? '<label>Block for</label><div class="segc" id="dur"><button data-h="0" class="on">Forever</button><button data-h="1">1 h</button><button data-h="2">2 h</button><button data-h="8">8 h</button><button data-h="24">24 h</button></div>' : '') +
+    (d.mac ? '<label>Connection history</label><div class="pv">' + historyHtml(d.mac) + '</div>' : '') +
     '<div style="height:18px"></div>' +
     (d.mac && d.ip ? '<button class="b soft full" id="rsv" style="margin-bottom:10px">Always give it ' + PV(d.ip) + '</button>' : '') +
     (d.mac ? (blocked
@@ -595,9 +695,51 @@ views.wifi = async function (alive) {
     '<label>New password (8–63 characters)</label><input class="pv" id="pw" autocapitalize="off" autocomplete="off" placeholder="Type the new password">' +
     '<div style="margin-top:18px"><button class="b full" id="go">Save changes</button></div>' +
     '<div class="sm" style="margin-top:12px">Everything on Wi-Fi, including this phone, drops and has to rejoin.</div></div>' +
+    '<div class="sec">Share and schedule</div><div class="card pad"><button class="b soft full" id="qrb">Show QR code to join this Wi-Fi</button>' +
+    '<div class="sm" style="margin:10px 0 14px">Anyone scans it with their phone camera and joins without typing the password.</div>' +
+    '<div class="row" style="padding:10px 0"><div class="grow"><div class="name">Wi-Fi schedule</div><div class="sm" id="schst">Reading…</div></div><button class="sw" id="schsw" disabled></button></div>' +
+    '<div class="sm" id="schnote">When on, the router switches Wi-Fi off during the times set below.</div>' +
+    '<div style="margin-top:12px"><button class="b soft sm2" id="schcol">Collect schedule details</button></div><pre class="pv" id="schout" hidden></pre><button class="b ghost sm2" id="schcp" hidden>Copy result</button></div>' +
     '<div class="sec">All networks on the router</div><div class="card">' +
     (nets.length ? nets.map((n) => '<div class="row"><div class="grow"><div class="name">' + PV(n.ssid || '(no name)') + '</div><div class="sm">' + (n.idx <= 4 ? '2.4 GHz' : '5 GHz') + ' · network ' + n.idx + '</div></div></div>').join('') : '<div class="empty">None found</div>') + '</div>' +
     '<div class="sm" style="margin:0 8px 14px">Only the 2.4 GHz network can be edited here for now. 5 GHz and guest need one recording from the old portal (More → Record).</div>';
+
+  $('#qrb').onclick = async () => {
+    try {
+      const r = await api('GET', '/html/amp/wlanbasic/WlanBasic.asp', BRH);
+      const o = parseObjs(r.body); const w = o.find((x) => x.type === 'stWlan' && /WLANConfiguration\.1$/.test(x.f[0] || '')); const k = o.find((x) => x.type === 'stPreSharedKey' && /WLANConfiguration\.1\./.test(x.f[0] || ''));
+      const nm = w ? w.f[3] : ssid, pw = k ? k.f[1] : '';
+      if (!nm || !pw) throw new Error('Could not read the Wi-Fi password from the router');
+      const q = (x) => x.replace(/([\\;,:"])/g, '\\$1');
+      sheet('<h2 style="margin:0 0 12px;font-size:24px;letter-spacing:-.02em;text-align:center">Join ' + PV(nm) + '</h2><div class="pv" style="display:flex;justify-content:center">' + QR.svg('WIFI:T:WPA;S:' + q(nm) + ';P:' + q(pw) + ';;', 260) + '</div>' +
+        '<div class="kv" style="margin-top:14px"><span>Password</span><span class="pv">' + esc(pw) + '</span></div>' +
+        '<div class="sm" style="margin:8px 0 14px;text-align:center">Open the camera on the other phone and point it here.</div><button class="b ghost full" id="x">Close</button>');
+      $('#x').onclick = closeSheet;
+    } catch (e) { toast(e.message, 4000); }
+  };
+  const SCH = '/html/amp/wifische/WlanSchedule.asp';
+  let schOn = null;
+  const drawSch = () => { const sw = $('#schsw'); if (!sw) return; sw.classList.toggle('on', !!schOn); sw.disabled = schOn === null; $('#schst').textContent = schOn === null ? 'Could not read' : schOn ? 'On' : 'Off'; };
+  api('GET', SCH, BRH).then((r) => { const m = /var\s+wlanSchecuelEnable\s*=\s*(\d)/.exec(r.body || ''); schOn = m ? +m[1] : null; drawSch(); }).catch(() => drawSch());
+  $('#schsw').onclick = async () => {
+    const sw = $('#schsw'); if (schOn === null) return; sw.disabled = true; const nv = schOn ? 0 : 1;
+    try {
+      const r = await postForm('/html/amp/wifische/set.cgi?x=InternetGatewayDevice.LANDevice.1.X_HW_WLANShutDownCtrl&RequestFile=html/amp/wifische/WlanSchedule.asp', { 'x.Enable': String(nv) });
+      await sleep(800); const c = await api('GET', SCH, BRH); const m = /var\s+wlanSchecuelEnable\s*=\s*(\d)/.exec(c.body || ''); schOn = m ? +m[1] : schOn;
+      toast(schOn === nv ? (nv ? 'Schedule on' : 'Schedule off') : 'The router did not change it (HTTP ' + r.status + ')', 3500);
+    } catch (e) { toast(e.message); }
+    drawSch();
+  };
+  $('#schcol').onclick = async () => {
+    const b = $('#schcol'), out = $('#schout'); b.disabled = true; out.hidden = false; out.textContent = 'Reading…';
+    try {
+      const r = await api('GET', SCH, BRH); const L = (r.body || '').split(/\r?\n/); const K = /time\d?_|Time|Duration|Repeat|function |Form\.|stDuration|Day|hour|min/;
+      const keep = []; L.forEach((l, i) => { if (K.test(l) && !/language\[|\.css|<td|<input/i.test(l)) keep.push((i + 1) + ': ' + l.trim().slice(0, 240)); });
+      const rep = '## ' + SCH + ' [' + r.status + ', ' + (r.body || '').length + ' bytes]\n' + keep.slice(0, 260).join('\n');
+      out.textContent = rep; const cp = $('#schcp'); cp.hidden = false; cp.onclick = () => copyText(rep);
+    } catch (e) { out.textContent = e.message; }
+    b.disabled = false;
+  };
   $('#go').onclick = async () => {
     const pw = $('#pw').value, name = $('#ssid').value.trim();
     if (pw.length < 8 || pw.length > 63) return toast('Password must be 8–63 characters');
