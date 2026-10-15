@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '28';
+const UI_VER = '29';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -842,6 +842,7 @@ views.tools = async function () {
     '<div style="margin-top:10px"><button class="b soft full" id="scan">Scan router pages</button></div><pre class="pv" id="scanout" hidden></pre><button class="b ghost sm2" id="scancp" hidden>Copy result</button></div>' +
     '<div class="sec">Reserved IPs</div><div class="card" id="rsvlist"><div class="empty"><span class="spin"></span></div></div>' +
     '<div class="sec">Collect router details</div><div class="card pad"><div class="sm">Reads the router\'s own pages for DHCP, DNS, WAN, guest Wi-Fi, port forwarding and more, and pulls out the request names they use. Takes about a minute. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="col">Collect</button></div><div class="sm" id="colst" style="margin-top:10px"></div><pre class="pv" id="colout" hidden></pre><button class="b ghost sm2" id="colcp" hidden>Copy result</button></div>' +
+    '<div class="sec">Router logs report</div><div class="card pad"><div class="sm">Reads the router\'s own log pages to see if they record devices joining or leaving. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="logcol">Collect router logs</button></div><pre class="pv" id="logout" hidden></pre><button class="b ghost sm2" id="logcp" hidden>Copy result</button></div>' +
     '<div class="sec">DNS report</div><div class="card pad"><div class="sm">Reads the DNS parts of the DHCP and WAN pages so I can build a DNS setting.</div><div style="margin-top:12px"><button class="b soft full" id="dnscol">Collect DNS details</button></div><pre class="pv" id="dnsout" hidden></pre><button class="b ghost sm2" id="dnscp" hidden>Copy result</button></div>' +
     '<div class="sec">Instant cut-off report</div><div class="card pad"><div class="sm">Reads the router\'s parental control, IP filter and related pages to find a way to cut a device off immediately. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="kcol">Collect</button></div><div class="sm" id="kst" style="margin-top:10px"></div><pre class="pv" id="kout" hidden></pre><button class="b ghost sm2" id="kcp" hidden>Copy result</button></div>' +
     '<div class="sec">Wi-Fi filter diagnose</div><div class="card pad"><div class="sm">Tries adding a test MAC to the Wi-Fi filter in several forms, shows the router\'s answer for each, then removes the test entries. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="wdiag">Run Wi-Fi filter diagnose</button></div><pre class="pv" id="wdout" hidden></pre><button class="b ghost sm2" id="wdcp" hidden>Copy result</button></div>' +
@@ -920,6 +921,18 @@ views.tools = async function () {
       rep += 'Test entries removed.\n';
     } catch (e) { rep += '\nStopped: ' + (e.message || e) + '\n'; }
     upd(); b.disabled = false; const cp = $('#wdcp'); cp.hidden = false; cp.onclick = () => copyText(rep);
+  };
+  $('#logcol').onclick = async () => {
+    const b = $('#logcol'), out = $('#logout'); b.disabled = true; out.hidden = false; out.textContent = 'Reading…'; let rep = '';
+    for (const p of ['/html/ssmp/userlog/normallogview.asp', '/html/ssmp/syslog/syslog.asp', '/html/bbsp/firewalllog/firewalllogview.asp']) {
+      try {
+        const r = await api('GET', p, BRH); const L = (r.body || '').split(/\r?\n/);
+        const keep = L.filter((l) => /new\s+st\w+|Log|log|Time|time|login|Login|assoc|Assoc|WLAN|DHCP|MAC|mac/.test(l) && !/language\[|\.css|<td|<input|<script|function/i.test(l)).map((l) => l.trim().slice(0, 240));
+        rep += '## ' + p + ' [' + r.status + ', ' + (r.body || '').length + ' bytes]\n' + keep.slice(0, 80).join('\n') + '\n\n';
+      } catch (e) { rep += '## ' + p + ' error: ' + e.message + '\n\n'; }
+      out.textContent = rep;
+    }
+    b.disabled = false; const cp = $('#logcp'); cp.hidden = false; cp.onclick = () => copyText(rep);
   };
   $('#dnscol').onclick = async () => {
     const b = $('#dnscol'), out = $('#dnsout'); b.disabled = true; out.hidden = false; out.textContent = 'Reading…'; let rep = '';
