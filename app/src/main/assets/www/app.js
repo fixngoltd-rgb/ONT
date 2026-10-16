@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '33';
+const UI_VER = '34';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -817,6 +817,7 @@ views.tools = async function () {
     '<div style="margin-top:16px"><button class="b full" id="save">Save</button></div></div></div>' +
     '<div id="dgwrap" hidden><div style="margin:8px 0 0"><button class="b ghost" id="dback" style="padding-left:0">‹ Back</button></div><div class="sm" style="margin:0 6px 4px">Bug-testing tools for sending me results. Most only read. The two filter diagnose tools briefly add a test entry to the router\'s filter and remove it.</div>' +
     '<div class="sec">Wi-Fi settings dump</div><div class="card pad"><div class="sm">Read-only. Reads every Wi-Fi, LAN and DHCP setting page in full (passwords hidden) so I can compare them with the earlier capture. Takes under a minute. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="wdump">Dump Wi-Fi settings</button></div><div class="sm" id="wdst" style="margin-top:8px"></div><pre class="pv" id="wdout" hidden></pre><button class="b ghost sm2" id="wdcp" hidden>Copy result</button></div>' +
+    '<div class="sec">Wi-Fi air report</div><div class="card pad"><div class="sm">Read-only. Reads which devices are on Wi-Fi with their signal and speed, and which other Wi-Fi networks are nearby on which channel. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="aircol">Collect Wi-Fi air report</button></div><pre class="pv" id="airout" hidden></pre><button class="b ghost sm2" id="aircp" hidden>Copy result</button></div>' +
     '<div class="sec">Add more features</div><div class="card pad"><div class="sm">Opens the router\'s original pages in here and records what each button sends, so I can build it. Passwords are hidden in the log.</div>' +
     '<div style="margin-top:14px"><button class="b soft full" id="cap">' + (canCapture ? 'Record from the old portal' : 'Needs the latest app install') + '</button></div>' +
     '<div style="margin-top:10px"><button class="b soft full" id="scan">Scan router pages</button></div><pre class="pv" id="scanout" hidden></pre><button class="b ghost sm2" id="scancp" hidden>Copy result</button></div>' +
@@ -851,6 +852,21 @@ views.tools = async function () {
       out.textContent = rep;
     }
     st.textContent = 'Done. Tap Copy result.'; b.disabled = false; const cp = $('#wdcp'); cp.hidden = false; cp.onclick = () => copyText(rep);
+  };
+  $('#aircol').onclick = async () => {
+    const b = $('#aircol'), out = $('#airout'); b.disabled = true; out.hidden = false; out.textContent = 'Reading…'; let rep = 'UI ' + UI_VER + ' · ' + new Date().toString() + '\n\n';
+    for (const p of ['/html/amp/wlaninfo/getassociateddeviceinfo.asp', '/html/amp/wlaninfo/getneighbourAPinfo.asp', '/html/amp/wlaninfo/getradar.asp']) {
+      for (const m of ['POST', 'GET']) {
+        try {
+          const r = await api(m, p, Object.assign({}, BRH, m === 'POST' ? FORM : {}), m === 'POST' ? '' : undefined);
+          const body = plain(r.body || '').replace(/\s+/g, ' ').slice(0, 3500);
+          rep += '## ' + m + ' ' + p + ' [' + r.status + ', ' + (r.body || '').length + ' bytes]\n' + body + '\n\n';
+          if ((r.body || '').length > 60) break;
+        } catch (e) { rep += '## ' + m + ' ' + p + ' error: ' + e.message + '\n\n'; }
+      }
+      out.textContent = rep;
+    }
+    b.disabled = false; const cp = $('#aircp'); cp.hidden = false; cp.onclick = () => copyText(rep);
   };
   const showDiag = (on) => { $('#dgwrap').hidden = !on; $('#mm1').hidden = on; $('#mm2').hidden = on; $('#view').scrollTop = 0; };
   $('#dopen').onclick = () => showDiag(true); $('#dback').onclick = () => showDiag(false);
