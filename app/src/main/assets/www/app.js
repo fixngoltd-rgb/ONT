@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '32';
+const UI_VER = '33';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -816,6 +816,7 @@ views.tools = async function () {
     '<label>Password</label><input class="pv" id="pass" type="password" value="' + esc(pref('pass', 'admin')) + '">' +
     '<div style="margin-top:16px"><button class="b full" id="save">Save</button></div></div></div>' +
     '<div id="dgwrap" hidden><div style="margin:8px 0 0"><button class="b ghost" id="dback" style="padding-left:0">‹ Back</button></div><div class="sm" style="margin:0 6px 4px">Bug-testing tools for sending me results. Most only read. The two filter diagnose tools briefly add a test entry to the router\'s filter and remove it.</div>' +
+    '<div class="sec">Wi-Fi settings dump</div><div class="card pad"><div class="sm">Read-only. Reads every Wi-Fi, LAN and DHCP setting page in full (passwords hidden) so I can compare them with the earlier capture. Takes under a minute. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="wdump">Dump Wi-Fi settings</button></div><div class="sm" id="wdst" style="margin-top:8px"></div><pre class="pv" id="wdout" hidden></pre><button class="b ghost sm2" id="wdcp" hidden>Copy result</button></div>' +
     '<div class="sec">Add more features</div><div class="card pad"><div class="sm">Opens the router\'s original pages in here and records what each button sends, so I can build it. Passwords are hidden in the log.</div>' +
     '<div style="margin-top:14px"><button class="b soft full" id="cap">' + (canCapture ? 'Record from the old portal' : 'Needs the latest app install') + '</button></div>' +
     '<div style="margin-top:10px"><button class="b soft full" id="scan">Scan router pages</button></div><pre class="pv" id="scanout" hidden></pre><button class="b ghost sm2" id="scancp" hidden>Copy result</button></div>' +
@@ -834,6 +835,23 @@ views.tools = async function () {
     '<div id="mm2"><div class="sec">App</div><div class="card pad"><div class="kv"><span>UI version</span><span>' + UI_VER + '</span></div><div class="kv"><span>Update check</span><span id="uistat" style="font-weight:500;font-size:13px">' + esc(pref('uiStatus', 'not checked yet')) + '</span></div>' +
     '<div style="margin-top:12px" class="seg"><button class="b soft sm2" id="chk">Check for update</button><button class="b ghost sm2" id="rst">Reset UI</button></div></div>' +
     '<div class="card"><div class="row tap" id="dopen"><div class="grow"><div class="name">Diagnostics</div><div class="sm">Bug-testing tools</div></div><span class="chev">›</span></div></div></div>';
+  $('#wdump').onclick = async () => {
+    const b = $('#wdump'), out = $('#wdout'), st = $('#wdst'); b.disabled = true; out.hidden = false; out.textContent = ''; let rep = 'UI ' + UI_VER + ' · ' + new Date().toString() + '\n\n';
+    const pages = ['/html/amp/wlanbasic/WlanBasic.asp', '/html/amp/wlanadv/WlanAdvance.asp', '/html/amp/wlaninfo/wlaninfo.asp', '/html/amp/wificovercfg/wifiCover.asp', '/html/amp/wificoverinfo/wlancoverinfo.asp', '/html/amp/wifische/WlanSchedule.asp', '/html/bbsp/wlanmacfilter/wlanmacfilter.asp', '/html/bbsp/macfilter/macfilter.asp', '/html/amp/ethinfo/ethinfo.asp', '/html/bbsp/dhcpservercfg/dhcp2.asp', '/html/bbsp/lanaddress/lanaddress.asp', '/html/ssmp/deviceinfo/deviceinfo.asp'];
+    const KEEP = /new\s+st\w+\(|^\s*var\s+\w+\s*=\s*(new\s|\d|'|")|^\s*\w+\s*=\s*new\s+st|wlanSchecuelEnable|enableFilter|Mode\s*=/;
+    const SKIP = /function\s|language\[|stTableTileInfo|^\s*this\.|\.css|<td|<input|<script/;
+    const mask = (l) => l.replace(/(stPreSharedKey\([^)]*?",\s*")[^"]*"/g, '$1***"').replace(/(stWEPKey\([^)]*?",\s*")[^"]*"/g, '$1***"').replace(/(stWpsPin\("[^"]*","[^"]*",")[^"]*"/g, '$1***"');
+    for (const p of pages) {
+      st.textContent = 'Reading ' + p;
+      try {
+        const r = await api('GET', p, BRH); const keep = [];
+        (r.body || '').split(/\r?\n/).forEach((l, i) => { if (KEEP.test(l) && !SKIP.test(l)) keep.push((i + 1) + ': ' + mask(l.trim()).slice(0, 1800)); });
+        rep += '## ' + p + ' [' + r.status + ', ' + (r.body || '').length + ' bytes]\n' + keep.slice(0, 120).join('\n') + '\n\n';
+      } catch (e) { rep += '## ' + p + ' error: ' + e.message + '\n\n'; }
+      out.textContent = rep;
+    }
+    st.textContent = 'Done. Tap Copy result.'; b.disabled = false; const cp = $('#wdcp'); cp.hidden = false; cp.onclick = () => copyText(rep);
+  };
   const showDiag = (on) => { $('#dgwrap').hidden = !on; $('#mm1').hidden = on; $('#mm2').hidden = on; $('#view').scrollTop = 0; };
   $('#dopen').onclick = () => showDiag(true); $('#dback').onclick = () => showDiag(false);
   const SCH = '/html/amp/wifische/WlanSchedule.asp';
