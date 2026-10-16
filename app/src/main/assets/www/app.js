@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '31';
+const UI_VER = '32';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -662,6 +662,25 @@ function deviceSheet(d, isBlocked, dn) {
   };
 }
 
+async function writeWifi(name, pw) {
+  return postForm('/html/amp/wlanbasic/set.cgi?w=InternetGatewayDevice.X_HW_DEBUG.AMP.WifiCoverSetWlanBasic' +
+        '&y=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1' +
+        '&z=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.WPS' +
+        '&k=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1' +
+        '&RequestFile=html/amp/wlanbasic/WlanBasic.asp', {
+        'y.Enable': '1', 'y.SSIDAdvertisementEnabled': '1', 'y.SSID': name, 'y.X_HW_AssociateNum': '32',
+        'y.BeaconType': 'WPAand11i', 'y.X_HW_WPAand11iAuthenticationMode': 'PSKAuthentication',
+        'y.X_HW_WPAand11iEncryptionModes': 'AESEncryption', 'k.PreSharedKey': pw,
+        'y.X_HW_GroupRekey': '3600', 'z.Enable': '0', 'z.X_HW_ConfigMethod': 'PushButton',
+        'w.SsidInst': '1', 'w.SSID': name, 'w.Enable': '1', 'w.Standard': '11bgn',
+        'w.BasicAuthenticationMode': 'None', 'w.BasicEncryptionModes': 'TKIPandAESEncryption',
+        'w.WPAAuthenticationMode': 'EAPAuthentication', 'w.WPAEncryptionModes': 'TKIPandAESEncryption',
+        'w.IEEE11iAuthenticationMode': 'EAPAuthentication', 'w.IEEE11iEncryptionModes': 'AESEncryption',
+        'w.MixAuthenticationMode': 'PSKAuthentication', 'w.MixEncryptionModes': 'AESEncryption',
+        'w.BeaconType': 'WPAand11i', 'w.WEPEncryptionLevel': '104-bit', 'w.WEPKeyIndex': '1', 'w.Key': pw,
+  });
+}
+const encSeen = (body) => { const l = (body || '').split(/\r?\n/).find((x) => /new stWlan\("InternetGatewayDevice\.LANDevice\.1\.WLANConfiguration\.1"/.test(x)) || ''; return (l.match(/(TKIPandAESEncryption|AESEncryption|TKIPEncryption)/g) || []).join(' / ') || 'unknown'; };
 /* ------------------------------------------------------------ wi-fi */
 views.wifi = async function (alive) {
   const l = await api('GET', '/html/amp/common/wlan_list.asp');
@@ -681,6 +700,7 @@ views.wifi = async function (alive) {
     '<div class="sm" style="margin-top:12px">Everything on Wi-Fi, including this phone, drops and has to rejoin.</div></div>' +
     '<div class="sec">Share</div><div class="card pad"><button class="b soft full" id="qrb">Show QR code to join this Wi-Fi</button>' +
     '<div class="sm" style="margin:10px 0 0">Anyone scans it with their phone camera and joins without typing the password.</div></div>' +
+    '<div class="sec">Connection speed</div><div class="card pad"><div class="kv" style="border-top:0"><span>Encryption now</span><span id="encnow">Reading…</span></div><div class="sm" style="margin:8px 0 12px">If devices take a long time to connect, set the encryption to AES only. Keeps your name and password, and Wi-Fi drops for a moment.</div><button class="b soft full" id="encfix">Set encryption to AES only</button></div>' +
     '<div class="sec">All networks on the router</div><div class="card">' +
     (nets.length ? nets.map((n) => '<div class="row"><div class="grow"><div class="name">' + PV(n.ssid || '(no name)') + '</div><div class="sm">' + (n.idx <= 4 ? '2.4 GHz' : '5 GHz') + ' · network ' + n.idx + '</div></div></div>').join('') : '<div class="empty">None found</div>') + '</div>' +
     '<div class="sm" style="margin:0 8px 14px">Only the 2.4 GHz network can be edited here for now. 5 GHz and guest need one recording from the old portal (More → Record).</div>';
@@ -698,6 +718,21 @@ views.wifi = async function (alive) {
       $('#x').onclick = closeSheet;
     } catch (e) { toast(e.message, 4000); }
   };
+  const readEnc = async () => { try { const r = await api('GET', '/html/amp/wlanbasic/WlanBasic.asp', BRH); $('#encnow').textContent = encSeen(r.body); } catch (e) { $('#encnow').textContent = 'could not read'; } };
+  readEnc();
+  $('#encfix').onclick = async () => {
+    const b = $('#encfix');
+    if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Tap again to confirm'; return; }
+    b.disabled = true;
+    try {
+      const r = await api('GET', '/html/amp/wlanbasic/WlanBasic.asp', BRH); const o = parseObjs(r.body);
+      const w = o.find((x) => x.type === 'stWlan' && /WLANConfiguration\.1$/.test(x.f[0] || '')); const k = o.find((x) => x.type === 'stPreSharedKey' && /WLANConfiguration\.1\./.test(x.f[0] || ''));
+      if (!w || !w.f[3] || !k || !k.f[1]) throw new Error('Could not read the current name and password, nothing changed');
+      await writeWifi(w.f[3], k.f[1]); await sleep(2500); await readEnc();
+      toast('Sent. Check "Encryption now", then reconnect your devices.', 5000);
+    } catch (e) { toast(e.message, 5000); }
+    b.disabled = false; b.dataset.c = ''; b.textContent = 'Set encryption to AES only';
+  };
   $('#go').onclick = async () => {
     const pw = $('#pw').value, name = $('#ssid').value.trim();
     if (pw.length < 8 || pw.length > 63) return toast('Password must be 8–63 characters');
@@ -706,22 +741,7 @@ views.wifi = async function (alive) {
     if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Tap again to confirm'; return; }
     b.disabled = true;
     try {
-      const r = await postForm('/html/amp/wlanbasic/set.cgi?w=InternetGatewayDevice.X_HW_DEBUG.AMP.WifiCoverSetWlanBasic' +
-        '&y=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1' +
-        '&z=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.WPS' +
-        '&k=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.PreSharedKey.1' +
-        '&RequestFile=html/amp/wlanbasic/WlanBasic.asp', {
-        'y.Enable': '1', 'y.SSIDAdvertisementEnabled': '1', 'y.SSID': name, 'y.X_HW_AssociateNum': '32',
-        'y.BeaconType': 'WPAand11i', 'y.X_HW_WPAand11iAuthenticationMode': 'PSKAuthentication',
-        'y.X_HW_WPAand11iEncryptionModes': 'TKIPandAESEncryption', 'k.PreSharedKey': pw,
-        'y.X_HW_GroupRekey': '3600', 'z.Enable': '0', 'z.X_HW_ConfigMethod': 'PushButton',
-        'w.SsidInst': '1', 'w.SSID': name, 'w.Enable': '1', 'w.Standard': '11bgn',
-        'w.BasicAuthenticationMode': 'None', 'w.BasicEncryptionModes': 'TKIPandAESEncryption',
-        'w.WPAAuthenticationMode': 'EAPAuthentication', 'w.WPAEncryptionModes': 'TKIPandAESEncryption',
-        'w.IEEE11iAuthenticationMode': 'EAPAuthentication', 'w.IEEE11iEncryptionModes': 'TKIPandAESEncryption',
-        'w.MixAuthenticationMode': 'PSKAuthentication', 'w.MixEncryptionModes': 'TKIPandAESEncryption',
-        'w.BeaconType': 'WPAand11i', 'w.WEPEncryptionLevel': '104-bit', 'w.WEPKeyIndex': '1', 'w.Key': pw,
-      });
+      const r = await writeWifi(name, pw);
       toast(r.status < 400 ? 'Sent. Rejoin Wi-Fi with the new password.' : 'Router said HTTP ' + r.status, 5000);
     } catch (e) { toast(e.message); }
     b.disabled = false; b.dataset.c = ''; b.textContent = 'Save changes';
