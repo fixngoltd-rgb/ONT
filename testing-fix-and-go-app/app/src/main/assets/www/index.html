@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
 <title>Fix and Go Board</title>
 <link rel="stylesheet" href="style.css">
 <script>try{document.documentElement.setAttribute("data-theme",localStorage.getItem("fg-theme")||"light")}catch(e){}</script>
@@ -27,6 +28,10 @@
     </button>
     <div class="title">FIX AND GO<span> BOARD</span></div>
     <div id="uk-clock" title="Current UK time"></div>
+    <button class="bell-btn" id="bell-btn" onclick="navAlerts()" aria-label="Alerts">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+      <span class="nav-badge" id="bell-badge" style="display:none;"></span>
+    </button>
   </div>
   <div id="search-bar">
     <input id="search-input" type="text" placeholder="Search ref, address, tenant, tech...">
@@ -38,7 +43,45 @@
   <div id="tab-bar"></div>
   <div class="pull-indicator" id="pull-indicator">Refreshing...</div>
   <div id="pager"></div>
+  <nav id="bottom-nav">
+    <button class="bn-item active" id="bn-board" onclick="navBoard()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span>Board</span>
+    </button>
+    <button class="bn-item" id="bn-plan" onclick="navPlan()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.5"/></svg><span id="bn-plan-lbl">My day</span>
+      <span class="nav-badge" id="bn-plan-badge" style="display:none;"></span>
+    </button>
+    <button class="bn-item" id="bn-alerts" onclick="navAlerts()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span>Alerts</span>
+      <span class="nav-badge" id="bn-alerts-badge" style="display:none;"></span>
+    </button>
+    <button class="bn-item" id="bn-menu" onclick="openSidebar()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg><span>Menu</span>
+    </button>
+  </nav>
+  <button id="fab" onclick="openNewJobScreen()" style="display:none;" aria-label="New job">+ New Job</button>
 </div>
+
+<div id="plan-screen" class="tabview">
+  <div class="tv-head"><div class="tv-title" id="plan-title">My day</div><div class="tv-date" id="plan-date"></div><div class="tv-sub" id="plan-sub"></div><div class="tv-bar" id="plan-bar" style="display:none;"><div id="plan-bar-fill"></div></div></div>
+  <div id="plan-add" class="plan-add" style="display:none;">
+    <input id="pa-title" placeholder="Add a task..." onkeydown="if(event.key==='Enter')addTodo()">
+    <div class="pa-row">
+      <select id="pa-pri"><option value="urgent">Do first</option><option value="today" selected>Today</option><option value="later">Later</option></select>
+      <input id="pa-ref" placeholder="Job no. (optional)">
+      <button onclick="addTodo()">Add</button>
+    </div>
+  </div>
+  <div id="plan-body"></div>
+</div>
+
+<div id="notif-screen" class="tabview">
+  <div class="tv-head"><div class="tv-title">Alerts</div><div class="tv-sub" id="nt-sub"></div>
+    <button class="tv-action" onclick="markAllNotifsRead()">Mark all read</button></div>
+  <div id="notif-body"></div>
+</div>
+
+<div id="mention-pop"></div>
 
 <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeSidebar()"></div>
 <aside id="sidebar">

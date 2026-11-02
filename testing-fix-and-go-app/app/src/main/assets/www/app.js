@@ -210,6 +210,7 @@ async function boot(){
   document.getElementById('sb-avatar').textContent = (nm.trim().split(/\s+/).map(w => w[0]).join('').slice(0,2) || '?').toUpperCase();
   applyRoleUI();
   await Promise.all([fetchAllJobs(), fetchTeamAndTechnicians()]);
+  initNotifications();
 }
 
 function applyRoleUI(){
@@ -220,6 +221,10 @@ function applyRoleUI(){
     if(el) el.style.display = isAdmin ? '' : 'none';
   });
   document.getElementById('filter-btn').style.display = isAdmin ? '' : 'none';
+  document.getElementById('fab').style.display = isAdmin ? '' : 'none';
+  document.getElementById('bn-plan-lbl').textContent = isAdmin ? 'Today' : 'My day';
+  document.getElementById('plan-title').textContent = isAdmin ? 'Today' : 'My day';
+  document.getElementById('plan-add').style.display = isAdmin ? '' : 'none';
 }
 
 /* ===== SIDEBAR ===== */
@@ -801,8 +806,11 @@ async function saveJobEdits(){
   const assignSel = document.getElementById('d-assigned-input');
   if(assignSel) updates.assigned_to = assignSel.value.trim() || null;
 
+  const prevJob = JOBS.find(x => x.id === currentDetailId);
+  const prevAssigned = prevJob ? (prevJob.assigned_to || '') : '';
   const { error } = await sb.from('jobs').update(updates).eq('id', currentDetailId);
   if(error){ showToast('Failed to save: ' + error.message); return; }
+  if(updates.assigned_to && updates.assigned_to !== prevAssigned && prevJob) notifyAssigned(Object.assign({}, prevJob, updates), updates.assigned_to);
 
   await autoAddTechnicianIfNew(updates.tech, updates.tech_phone);
 
@@ -878,6 +886,7 @@ window.onBack = function(){
     closeDetail();
     return 'false';
   }
+  if(document.getElementById('plan-screen').classList.contains('open') || document.getElementById('notif-screen').classList.contains('open')){ navBoard(); return 'false'; }
   return 'true';
 };
 
@@ -953,7 +962,7 @@ async function loadComments(jobId){
       <div class="comment-item">
         <div class="comment-head"><div><div class="comment-author">${escHtml(c.author)}</div><div class="comment-time">${time}</div></div>
           ${canEdit ? `<button class="comment-edit-btn" onclick="startEditComment('${c.id}')" aria-label="Edit comment">&#9998;</button>` : ''}</div>
-        <div class="comment-text" id="comment-text-${c.id}">${escHtml(c.message)}</div>
+        <div class="comment-text" id="comment-text-${c.id}">${mentionHtml(c.message)}</div>
         ${photos}${docs}
       </div>`;
   }).join('');
@@ -1034,6 +1043,7 @@ async function postComment(){
     note_time: now.toTimeString().split(' ')[0].slice(0,5), text: fullMessage, author
   }]);
 
+  notifyMentions(currentDetailId, message, author);
   input.value = '';
   pendingPhoto = null;
   renderPhotoPreview();
@@ -1615,3 +1625,313 @@ async function removeTechForm(){
 
 /* ===== INIT ===== */
 boot();
+
+
+/* ===== PHONE UPDATE: alerts, @mentions, My day / Today, light phone layout =====
+   Same Supabase tables as the desktop board (notifications, board_todos, user_directory). */
+let NOTIFS = [], USER_DIR = [], TODOS = [], NOTIF_TIMER = null, TODAY_SHOW_DONE = false, LAST_JOBS_REFRESH = Date.now();
+const isAdminUser = () => !!CURRENT_USER && CURRENT_USER.role === 'admin';
+const canSeeJob = j => isAdminUser() || (j.assigned_to || '').trim().toLowerCase() === (CURRENT_USER.name || '').trim().toLowerCase();
+
+async function loadUserDirectory(){
+  const { data } = await sb.from('user_directory').select('id,name,role');
+  USER_DIR = data || [];
+}
+
+function mentionHtml(msg){
+  let h = escHtml(msg);
+  const names = USER_DIR.map(u => (u.name || '').trim()).filter(Boolean).sort((a, b) => b.length - a.length);
+  names.forEach(n => {
+    const esc = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    h = h.replace(new RegExp('@' + esc.replace(/ /g, ' '), 'gi'), m => '<span class="mention">' + m + '</span>');
+  });
+  return h;
+}
+
+/* ---- bottom navigation ---- */
+function setNav(id){
+  ['bn-board', 'bn-plan', 'bn-alerts'].forEach(x => document.getElementById(x).classList.toggle('active', x === id));
+}
+function closeTabViews(){
+  ['plan-screen', 'notif-screen'].forEach(id => document.getElementById(id).classList.remove('open'));
+}
+function navBoard(){ closeTabViews(); setNav('bn-board'); }
+function navPlan(){
+  closeTabViews();
+  document.getElementById('plan-screen').classList.add('open');
+  setNav('bn-plan');
+  if(isAdminUser()) loadTodos().then(renderPlan); else renderPlan();
+}
+function navAlerts(){
+  closeTabViews();
+  document.getElementById('notif-screen').classList.add('open');
+  setNav('bn-alerts');
+  loadNotifs().then(renderNotifs);
+  renderNotifs();
+}
+function setBadge(id, n){
+  const el = document.getElementById(id);
+  if(el){ el.textContent = n > 99 ? '99+' : n; el.style.display = n ? 'flex' : 'none'; }
+}
+function setAlertBadges(n){ setBadge('bell-badge', n); setBadge('bn-alerts-badge', n); }
+
+/* ---- alerts ---- */
+async function loadNotifs(quiet){
+  if(!CURRENT_USER) return;
+  const { data, error } = await sb.from('notifications').select('*')
+    .eq('user_id', CURRENT_USER.id).order('created_at', { ascending: false }).limit(50);
+  if(error) return;
+  const oldIds = new Set(NOTIFS.map(n => n.id));
+  const fresh = (data || []).filter(n => !n.read && !oldIds.has(n.id));
+  NOTIFS = data || [];
+  setAlertBadges(NOTIFS.filter(n => !n.read).length);
+  if(quiet && fresh.length){
+    showToast(fresh[0].title + (fresh.length > 1 ? ' (+' + (fresh.length - 1) + ' more)' : ''));
+    try { if(navigator.vibrate) navigator.vibrate([120, 60, 120]); } catch(e){}
+  }
+  if(document.getElementById('notif-screen').classList.contains('open')) renderNotifs();
+}
+function timeAgo(iso){
+  const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if(m < 1) return 'just now';
+  if(m < 60) return m + ' min ago';
+  const h = Math.floor(m / 60);
+  if(h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+function renderNotifs(){
+  const body = document.getElementById('notif-body');
+  const unread = NOTIFS.filter(n => !n.read).length;
+  document.getElementById('nt-sub').textContent = unread ? unread + ' unread' : 'All caught up';
+  body.innerHTML = NOTIFS.length ? NOTIFS.map(n => `
+    <div class="nt-item ${n.read ? '' : 'unread'}" onclick="openNotif('${n.id}')">
+      <div class="nt-ico">${n.kind === 'mention' ? '&#128172;' : '&#128204;'}</div>
+      <div class="nt-main"><div class="nt-t">${escHtml(n.title)}</div>${n.body ? `<div class="nt-b">${escHtml(n.body)}</div>` : ''}<div class="nt-when">${timeAgo(n.created_at)}</div></div>
+    </div>`).join('') : '<div class="empty-state">Nothing yet. You will see a message here when a job is assigned to you or someone mentions you.</div>';
+}
+async function openNotif(id){
+  const n = NOTIFS.find(x => x.id === id);
+  if(!n) return;
+  if(!n.read){
+    n.read = true;
+    setAlertBadges(NOTIFS.filter(x => !x.read).length);
+    sb.from('notifications').update({ read: true }).eq('id', id).then(() => {});
+    renderNotifs();
+  }
+  if(n.job_id && JOBS.find(j => j.id === n.job_id)){
+    openDetail(n.job_id, null);
+    if(n.kind === 'mention') switchDetailTab('comments');
+  } else if(n.job_id){ showToast('That job is no longer on the board'); }
+}
+async function markAllNotifsRead(){
+  if(!CURRENT_USER) return;
+  await sb.from('notifications').update({ read: true }).eq('user_id', CURRENT_USER.id).eq('read', false);
+  NOTIFS.forEach(n => n.read = true);
+  setAlertBadges(0);
+  renderNotifs();
+}
+async function createNotifications(rows){
+  if(!rows.length || !CURRENT_USER) return;
+  const { error } = await sb.from('notifications').insert(rows.map(r => Object.assign({ from_name: CURRENT_USER.name }, r)));
+  if(error){ console.error('notify failed:', error.message); return; }
+  // desktop / browser users who turned on pop-ups get pinged too (best effort)
+  rows.forEach(r => { sb.functions.invoke('send-push', { body: { user_id: r.user_id, title: r.title, body: r.body, job_id: r.job_id } }).catch(() => {}); });
+}
+async function notifyAssigned(job, assigneeName){
+  if(!job || !assigneeName) return;
+  if(!USER_DIR.length) await loadUserDirectory();
+  const want = assigneeName.trim().toLowerCase();
+  const people = USER_DIR.filter(u => (u.name || '').trim().toLowerCase() === want && u.id !== CURRENT_USER.id);
+  await createNotifications(people.map(u => ({
+    user_id: u.id, kind: 'assigned', job_id: job.id,
+    title: 'New job assigned: ' + (job.ref || ''),
+    body: (job.title || '') + (job.address ? ' - ' + job.address : '')
+  })));
+}
+async function notifyMentions(jobId, message, authorName){
+  if(!message || message.indexOf('@') < 0) return;
+  if(!USER_DIR.length) await loadUserDirectory();
+  const low = message.toLowerCase();
+  const job = JOBS.find(j => j.id === jobId);
+  const people = USER_DIR.filter(u => u.id !== CURRENT_USER.id && low.indexOf('@' + (u.name || '').trim().toLowerCase()) >= 0);
+  await createNotifications(people.map(u => ({
+    user_id: u.id, kind: 'mention', job_id: jobId,
+    title: (authorName || 'Someone') + ' mentioned you' + (job ? ' on ' + job.ref : ''),
+    body: message.slice(0, 200)
+  })));
+}
+
+/* ---- @mention picker in the comment box ---- */
+let MENTION_MATCHES = [];
+function mentionContext(ta){
+  const upto = ta.value.slice(0, ta.selectionStart);
+  const m = upto.match(/(^|\s)@([A-Za-z][A-Za-z ]{0,20})?$/);
+  return m ? { start: upto.length - (m[2] ? m[2].length : 0) - 1, query: (m[2] || '').toLowerCase() } : null;
+}
+function hideMentionPop(){ document.getElementById('mention-pop').style.display = 'none'; }
+function updateMentionPop(ta){
+  const ctx = mentionContext(ta);
+  if(!ctx){ hideMentionPop(); return; }
+  const seen = new Set();
+  MENTION_MATCHES = USER_DIR.filter(u => u.id !== (CURRENT_USER && CURRENT_USER.id))
+    .map(u => (u.name || '').trim()).filter(n => { const k = n.toLowerCase(); if(!n || seen.has(k)) return false; seen.add(k); return k.startsWith(ctx.query); });
+  if(!MENTION_MATCHES.length){ hideMentionPop(); return; }
+  const pop = document.getElementById('mention-pop');
+  const r = document.getElementById('comment-compose').getBoundingClientRect();
+  pop.innerHTML = MENTION_MATCHES.map((n, i) => `<div onpointerdown="event.preventDefault();pickMention(${i})">@${escHtml(n)}</div>`).join('');
+  pop.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+  pop.style.display = 'block';
+}
+function pickMention(i){
+  const ta = document.getElementById('comment-input');
+  const ctx = mentionContext(ta);
+  if(!ctx || !MENTION_MATCHES[i]) return;
+  const before = ta.value.slice(0, ctx.start), after = ta.value.slice(ta.selectionStart);
+  const ins = '@' + MENTION_MATCHES[i] + ' ';
+  ta.value = before + ins + after;
+  ta.selectionStart = ta.selectionEnd = (before + ins).length;
+  hideMentionPop();
+  ta.focus();
+}
+document.addEventListener('DOMContentLoaded', () => {
+  const ta = document.getElementById('comment-input');
+  ta.addEventListener('input', () => updateMentionPop(ta));
+  ta.addEventListener('blur', () => setTimeout(hideMentionPop, 200));
+});
+
+/* ---- Today (admin: tasks + what needs a nudge) / My day (everyone else) ---- */
+async function loadTodos(){
+  if(!isAdminUser()) return;
+  const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+  const { data, error } = await sb.from('board_todos').select('*').or('done.eq.false,done_at.gte.' + since).order('created_at', { ascending: true });
+  if(!error) TODOS = data || [];
+}
+const TD_ICON = { call: '&#128222;', email: '&#9993;&#65039;', quote: '&#128183;', visit: '&#128295;', invoice: '&#129534;', other: '&#128204;' };
+function planRow(icon, j, title, sub, cls){
+  return `<div class="pl-item ${cls}" onclick="openDetail('${j.id}', null)">
+    <div class="pl-ico">${icon}</div>
+    <div class="pl-main"><div class="pl-t"><span class="pl-ref">${escHtml(j.ref)}</span>${escHtml(title || 'Untitled')}</div><div class="pl-s">${escHtml(sub)}${j.address ? ' - ' + escHtml(j.address) : ''}</div></div>
+  </div>`;
+}
+function todoRow(t){
+  const j = t.job_ref ? JOBS.find(x => (x.ref || '').toUpperCase() === t.job_ref.toUpperCase()) : null;
+  return `<div class="pl-item ${t.priority} ${t.done ? 'isdone' : ''}">
+    <input type="checkbox" class="pl-chk" ${t.done ? 'checked' : ''} onchange="setTodoDone('${t.id}', this.checked)">
+    <div class="pl-main" ${j ? `onclick="openDetail('${j.id}', null)"` : ''}><div class="pl-t">${t.job_ref ? `<span class="pl-ref">${escHtml(t.job_ref)}</span>` : ''}${escHtml(t.title)}</div>${t.note ? `<div class="pl-s">${escHtml(t.note)}</div>` : ''}</div>
+    <button class="pl-x" onclick="deleteTodo('${t.id}')" aria-label="Remove">&times;</button>
+  </div>`;
+}
+function adminAuto(){
+  const jobs = JOBS.filter(canSeeJob), today = todayDateStr();
+  const open = j => j.status !== 'completed' && j.status !== 'cancelled';
+  const age = d => d === 0 ? 'today' : d + 'd ago';
+  const byAge = (a, b) => b.days - a.days;
+  const out = { urgent: [], today: [], chase: [], later: [] };
+  jobs.filter(j => !j.quote_needed && j.scheduled_at && ukDate(j.scheduled_at) < today && open(j)).map(j => ({ j, days: daysSince(j.scheduled_at) })).sort(byAge)
+    .forEach(x => out.urgent.push({ j: x.j, ico: '&#128197;', s: 'Missed appointment, was ' + ukDate(x.j.scheduled_at) + ' - rebook or close' }));
+  jobs.filter(j => j.quote_needed && !j.quoted && open(j)).map(j => ({ j, days: daysSince(j.created_at) })).sort(byAge).filter(x => x.days >= 5)
+    .forEach(x => out.urgent.push({ j: x.j, ico: '&#128183;', s: 'Price still owed, asked ' + age(x.days) }));
+  jobs.filter(j => !j.quote_needed && j.scheduled_at && ukDate(j.scheduled_at) === today && open(j))
+    .forEach(j => out.today.push({ j, ico: '&#128295;', s: 'Visit today' + (j.tech ? ' - ' + j.tech : '') }));
+  jobs.filter(j => j.quote_needed && !j.quoted && open(j)).map(j => ({ j, days: daysSince(j.created_at) })).sort(byAge).filter(x => x.days < 5)
+    .forEach(x => out.today.push({ j: x.j, ico: '&#128183;', s: 'Give a price, asked ' + age(x.days) }));
+  jobs.filter(j => !j.quote_needed && j.status === 'completed' && !j.invoiced).map(j => ({ j, days: daysSince(j.date_completed || j.updated_at || j.created_at) })).sort(byAge)
+    .forEach(x => out.today.push({ j: x.j, ico: '&#129534;', s: 'Raise invoice, done ' + age(x.days) }));
+  jobs.filter(j => j.quote_needed && j.quoted && open(j)).map(j => ({ j, days: QUOTE_DATES[j.id] ? daysSince(QUOTE_DATES[j.id]) : daysSince(j.created_at) })).sort(byAge).filter(x => x.days >= 7)
+    .forEach(x => out.chase.push({ j: x.j, ico: '&#128276;', s: 'Quoted ' + age(x.days) + ' - polite chase' }));
+  const noDate = jobs.filter(j => !j.quote_needed && ['active', 'contacted'].includes(j.status) && !j.scheduled_at && daysSince(j.created_at) >= 2).length;
+  return { out, noDate };
+}
+function renderPlan(){
+  const body = document.getElementById('plan-body');
+  document.getElementById('plan-date').textContent = new Date().toLocaleDateString('en-GB', { timeZone: UK_TZ, weekday: 'long', day: 'numeric', month: 'long' });
+  let html = '', badge = 0;
+  if(isAdminUser()){
+    const { out, noDate } = adminAuto();
+    const manualOpen = p => TODOS.filter(t => !t.done && t.priority === p);
+    const doneT = TODOS.filter(t => t.done);
+    const taken = new Set(TODOS.filter(t => !t.done && t.job_ref).map(t => t.job_ref.toUpperCase()));
+    const groups = [['urgent', 'Do first', 'urgent'], ['today', 'Today', 'today'], ['chase', 'Chase', 'chase'], ['later', 'Later', 'later']];
+    groups.forEach(([key, label, cls]) => {
+      const man = key === 'chase' ? [] : manualOpen(key);
+      const auto = (out[key] || []).filter(a => !taken.has((a.j.ref || '').toUpperCase()));
+      const shown = auto.slice(0, 4), hidden = auto.length - shown.length;
+      if(!man.length && !auto.length && !(key === 'later' && noDate)) return;
+      html += `<div class="pl-group"><div class="pl-gh ${cls}">${label}<span class="n">${man.length + auto.length}</span></div>`;
+      html += man.map(todoRow).join('') + shown.map(a => planRow(a.ico, a.j, a.j.title, a.s, cls)).join('');
+      if(hidden > 0) html += `<div class="pl-more" onclick="openActionDesk()">+ ${hidden} more in the Action Desk</div>`;
+      if(key === 'later' && noDate) html += `<div class="pl-item later" onclick="openActionDesk()"><div class="pl-ico">&#128467;&#65039;</div><div class="pl-main"><div class="pl-t">${noDate} active job${noDate === 1 ? '' : 's'} with no start date</div><div class="pl-s">Open the Action Desk to go through them</div></div></div>`;
+      html += '</div>';
+    });
+    if(doneT.length){
+      html += `<div class="pl-group"><div class="pl-doneh" onclick="TODAY_SHOW_DONE=!TODAY_SHOW_DONE;renderPlan()">${TODAY_SHOW_DONE ? '&#9662;' : '&#9656;'} Done (${doneT.length})</div>${TODAY_SHOW_DONE ? doneT.map(todoRow).join('') : ''}</div>`;
+    }
+    badge = manualOpen('urgent').length + manualOpen('today').length + out.urgent.length;
+    const total = TODOS.length;
+    document.getElementById('plan-sub').textContent = total ? doneT.length + ' of ' + total + ' tasks done' + (out.urgent.length ? ' - ' + out.urgent.length + ' urgent from the board' : '') : (out.urgent.length ? out.urgent.length + ' urgent from the board' : 'Add your first task above');
+    const bar = document.getElementById('plan-bar'); bar.style.display = total ? '' : 'none';
+    document.getElementById('plan-bar-fill').style.width = (total ? Math.round(100 * doneT.length / total) : 0) + '%';
+    body.innerHTML = html || '<div class="empty-state">Nothing here.</div>';
+  } else {
+    const jobs = JOBS.filter(j => canSeeJob(j) && j.status !== 'completed' && j.status !== 'cancelled');
+    const today = todayDateStr();
+    const sched = j => j.scheduled_at ? ukDate(j.scheduled_at) : null;
+    const nice = d => new Date(d + 'T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+    const tm = j => { const p = ukParts(j.scheduled_at); return p && p.hasTime ? p.time : ''; };
+    const byTime = (a, b) => new Date(a.scheduled_at) - new Date(b.scheduled_at);
+    const groups = [
+      ['Today', 'today', jobs.filter(j => !j.quote_needed && sched(j) === today).sort(byTime).map(j => ({ j, s: (tm(j) ? tm(j) + ' - ' : '') + 'visit today' }))],
+      ['Missed, needs rebooking', 'urgent', jobs.filter(j => !j.quote_needed && sched(j) && sched(j) < today).map(j => ({ j, s: 'Was ' + nice(sched(j)) }))],
+      ['Coming up', 'chase', jobs.filter(j => !j.quote_needed && sched(j) && sched(j) > today).sort(byTime).map(j => ({ j, s: nice(sched(j)) + (tm(j) ? ' at ' + tm(j) : '') }))],
+      ['Needs booking in', 'today', jobs.filter(j => !j.quote_needed && !j.scheduled_at && ['active', 'contacted'].includes(j.status)).map(j => ({ j, s: 'No date yet' }))],
+      ['Prices to give', 'later', jobs.filter(j => j.quote_needed && !j.quoted).map(j => ({ j, s: 'Price still to give' }))]
+    ];
+    const total = groups.reduce((n, g) => n + g[2].length, 0);
+    html = groups.filter(g => g[2].length).map(g => `<div class="pl-group"><div class="pl-gh ${g[1]}">${g[0]}<span class="n">${g[2].length}</span></div>${g[2].map(r => planRow(g[0] === 'Prices to give' ? '&#128183;' : '&#128295;', r.j, r.j.title, r.s, g[1])).join('')}</div>`).join('');
+    badge = groups[0][2].length + groups[1][2].length;
+    document.getElementById('plan-sub').textContent = total ? total + ' job' + (total === 1 ? '' : 's') + ' on your plate' : 'Nothing assigned to you right now';
+    document.getElementById('plan-bar').style.display = 'none';
+    body.innerHTML = html || '<div class="empty-state">You are all clear. New jobs assigned to you will show up here.</div>';
+  }
+  setBadge('bn-plan-badge', badge);
+}
+async function addTodo(){
+  const titleEl = document.getElementById('pa-title');
+  const title = (titleEl.value || '').trim();
+  if(!title) return;
+  const refRaw = (document.getElementById('pa-ref').value || '').trim().toUpperCase();
+  const job_ref = refRaw ? (/^\d+$/.test(refRaw) ? 'JOB-' + refRaw.padStart(3, '0') : refRaw) : null;
+  const { error } = await sb.from('board_todos').insert({ title, priority: document.getElementById('pa-pri').value, kind: 'other', job_ref });
+  if(error){ showToast('Could not add task: ' + error.message); return; }
+  titleEl.value = ''; document.getElementById('pa-ref').value = '';
+  await loadTodos(); renderPlan();
+}
+async function setTodoDone(id, done){
+  const { error } = await sb.from('board_todos').update({ done, done_at: done ? new Date().toISOString() : null }).eq('id', id);
+  if(error) showToast('Could not update task');
+  await loadTodos(); renderPlan();
+}
+async function deleteTodo(id){
+  const { error } = await sb.from('board_todos').delete().eq('id', id);
+  if(error) showToast('Could not remove task');
+  await loadTodos(); renderPlan();
+}
+
+async function initNotifications(){
+  await loadUserDirectory();
+  await loadNotifs();
+  if(isAdminUser()) await loadTodos();
+  renderPlan();
+  if(NOTIF_TIMER) clearInterval(NOTIF_TIMER);
+  NOTIF_TIMER = setInterval(() => { if(!document.hidden) loadNotifs(true); }, 45000);
+  document.addEventListener('visibilitychange', async () => {
+    if(document.hidden) return;
+    loadNotifs(true);
+    if(Date.now() - LAST_JOBS_REFRESH > 60000){ LAST_JOBS_REFRESH = Date.now(); await fetchAllJobs(); renderPlan(); }
+  });
+}
+// keep the day list and its badge in step whenever the job list reloads
+(function(){
+  const orig = fetchAllJobs;
+  fetchAllJobs = async function(){ await orig.apply(this, arguments); LAST_JOBS_REFRESH = Date.now(); if(CURRENT_USER) try { renderPlan(); } catch(e){} };
+})();
