@@ -1367,10 +1367,7 @@ async function makeWorkReport(){
     if(upErr) throw new Error('Upload failed: ' + upErr.message);
     const { data: urlData } = sb.storage.from('job-files').getPublicUrl(filePath);
     await sb.from('job_files').insert([{ job_id: j.id, file_name: fname, file_url: urlData.publicUrl, mime_type: 'application/pdf' }]);
-    const { data: nc, error: cErr } = await sb.from('board_comments').insert([{
-      job_id: j.id, author: (CURRENT_USER.name || 'Ilyas').replace(/\s*\(Admin\)$/, ''),
-      message: 'work report [1 attachment: ' + fname + ']', author_user_id: CURRENT_USER.id }]).select().single();
-    if(!cErr && nc) await sb.from('comment_attachments').insert([{ comment_id: nc.id, file_url: urlData.publicUrl, file_name: fname, mime_type: 'application/pdf' }]);
+    /* no board comment any more: the PDF is saved to the job's files only */
     WR_LAST_URL = urlData.publicUrl;
     closeWrPreview();
     document.getElementById('wr-link-row').style.display = '';
