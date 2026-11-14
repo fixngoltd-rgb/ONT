@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '34';
+const UI_VER = '35';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -527,6 +527,11 @@ async function setWFilter(mode) { // 'off' | 'block' | 'allow'
   await postForm(WFURL, f); await sleep(1500);
   return filterState((await api('GET', WF + 'wlanmacfilter.asp')).body);
 }
+async function assocMacs() {
+  const r = await api('POST', '/html/amp/wlaninfo/getassociateddeviceinfo.asp', Object.assign({}, BRH, FORM), '');
+  const out = []; (r.body || '').replace(/stAssociatedDevice\("[^"]*","([0-9a-f:]{17})"/gi, (m, x) => { out.push(x.toLowerCase()); return m; });
+  return out;
+}
 async function unblockAny(mac) {
   const key = mac.toLowerCase(); let did = false;
   const w = await loadWBlocked();
@@ -584,7 +589,8 @@ async function restartRouter() {
 let devQuery = '';
 views.devices = async function (alive) {
   await sweepTimers().catch(() => {});
-  const [list, lanB, wlB] = await Promise.all([loadDevices(), loadBlocked().catch(() => []), loadWBlocked().then((x) => x.list).catch(() => [])]);
+  let wfst = null;
+  const [list, lanB, wlB] = await Promise.all([loadDevices(), loadBlocked().catch(() => []), loadWBlocked().then((x) => { wfst = x.st; return x.list; }).catch(() => [])]);
   const blocked = lanB.concat(wlB);
   if (!alive()) return;
   const nicks = getNicks(), timers = jget('timers', {});
@@ -598,7 +604,8 @@ views.devices = async function (alive) {
   list.sort((x, y) => (y.online - x.online) || (ipNum(x.ip) - ipNum(y.ip)));
   const newOnes = list.filter(isNew);
   $('#sub').textContent = list.filter((d) => d.online).length + ' online · ' + list.length + ' known' + (newOnes.length ? ' · ' + newOnes.length + ' new' : '');
-  $('#view').innerHTML = '<input class="pv" id="q" placeholder="Search" autocapitalize="off" value="' + esc(devQuery) + '" style="margin-bottom:14px"><div id="devs"></div>';
+  const warn = wfst && !wfst.on && wlB.length ? '<div class="card pad" style="border:1px solid var(--bad)"><b class="err">Wi-Fi filter is OFF</b><div class="sm" style="margin-top:4px">Devices listed as blocked are NOT blocked. Open Blocking and tap Check and fix blocking.</div></div>' : '';
+  $('#view').innerHTML = warn + '<input class="pv" id="q" placeholder="Search" autocapitalize="off" value="' + esc(devQuery) + '" style="margin-bottom:14px"><div id="devs"></div>';
   const draw = () => {
     const q = devQuery.trim().toLowerCase();
     const shown = list.filter((d) => !q || [dn(d), d.ip, d.mac].some((x) => (x || '').toLowerCase().includes(q)));
@@ -662,7 +669,8 @@ function deviceSheet(d, isBlocked, dn) {
   };
 }
 
-async function writeWifi(name, pw) {
+async function writeWifi(name, pw, enc) {
+  enc = enc || 'TKIPandAESEncryption'; // what the router had originally
   return postForm('/html/amp/wlanbasic/set.cgi?w=InternetGatewayDevice.X_HW_DEBUG.AMP.WifiCoverSetWlanBasic' +
         '&y=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1' +
         '&z=InternetGatewayDevice.LANDevice.1.WLANConfiguration.1.WPS' +
@@ -670,13 +678,13 @@ async function writeWifi(name, pw) {
         '&RequestFile=html/amp/wlanbasic/WlanBasic.asp', {
         'y.Enable': '1', 'y.SSIDAdvertisementEnabled': '1', 'y.SSID': name, 'y.X_HW_AssociateNum': '32',
         'y.BeaconType': 'WPAand11i', 'y.X_HW_WPAand11iAuthenticationMode': 'PSKAuthentication',
-        'y.X_HW_WPAand11iEncryptionModes': 'AESEncryption', 'k.PreSharedKey': pw,
+        'y.X_HW_WPAand11iEncryptionModes': enc, 'k.PreSharedKey': pw,
         'y.X_HW_GroupRekey': '3600', 'z.Enable': '0', 'z.X_HW_ConfigMethod': 'PushButton',
         'w.SsidInst': '1', 'w.SSID': name, 'w.Enable': '1', 'w.Standard': '11bgn',
         'w.BasicAuthenticationMode': 'None', 'w.BasicEncryptionModes': 'TKIPandAESEncryption',
         'w.WPAAuthenticationMode': 'EAPAuthentication', 'w.WPAEncryptionModes': 'TKIPandAESEncryption',
-        'w.IEEE11iAuthenticationMode': 'EAPAuthentication', 'w.IEEE11iEncryptionModes': 'AESEncryption',
-        'w.MixAuthenticationMode': 'PSKAuthentication', 'w.MixEncryptionModes': 'AESEncryption',
+        'w.IEEE11iAuthenticationMode': 'EAPAuthentication', 'w.IEEE11iEncryptionModes': enc,
+        'w.MixAuthenticationMode': 'PSKAuthentication', 'w.MixEncryptionModes': enc,
         'w.BeaconType': 'WPAand11i', 'w.WEPEncryptionLevel': '104-bit', 'w.WEPKeyIndex': '1', 'w.Key': pw,
   });
 }
@@ -728,7 +736,7 @@ views.wifi = async function (alive) {
       const r = await api('GET', '/html/amp/wlanbasic/WlanBasic.asp', BRH); const o = parseObjs(r.body);
       const w = o.find((x) => x.type === 'stWlan' && /WLANConfiguration\.1$/.test(x.f[0] || '')); const k = o.find((x) => x.type === 'stPreSharedKey' && /WLANConfiguration\.1\./.test(x.f[0] || ''));
       if (!w || !w.f[3] || !k || !k.f[1]) throw new Error('Could not read the current name and password, nothing changed');
-      await writeWifi(w.f[3], k.f[1]); await sleep(2500); await readEnc();
+      await writeWifi(w.f[3], k.f[1], 'AESEncryption'); await sleep(2500); await readEnc();
       toast('Sent. Check "Encryption now", then reconnect your devices.', 5000);
     } catch (e) { toast(e.message, 5000); }
     b.disabled = false; b.dataset.c = ''; b.textContent = 'Set encryption to AES only';
@@ -760,6 +768,7 @@ views.block = async function (alive) {
   const sw = (id, m) => '<div class="segc" id="' + id + '"><button data-m="off" class="' + (m === 'off' ? 'on' : '') + '">Off</button><button data-m="block" class="' + (m === 'block' ? 'on' : '') + '">Blocklist</button><button data-m="allow" class="' + (m === 'allow' ? 'on' : '') + '">Allowlist</button></div>';
   const rows = (list, kind) => list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + PV(nicks[x.mac] || x.mac) + '</div><div class="sm">' + PV(x.mac) + (timers[x.mac] ? ' · ' + left(timers[x.mac]) : '') + '</div></div><button class="b soft sm2" data-k="' + kind + '" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Nothing blocked</div>';
   $('#view').innerHTML =
+    '<div class="card pad"><h2>Check blocking</h2><div class="sm">Checks that the filter is really on, switches it on if it isn\'t, and shows whether any blocked device is still on Wi-Fi.</div><div style="margin-top:12px"><button class="b full" id="chk2">Check and fix blocking</button></div><div id="chkout" style="margin-top:12px" hidden></div></div>' +
     '<div class="card pad"><h2>Wi-Fi filter</h2>' + sw('wsw', modeOf(wst)) +
     '<div class="sm" style="margin-top:12px">This is the one that blocks phones and laptops on Wi-Fi. Blocklist: listed devices are cut off. Allowlist: only listed devices get in, so be careful.</div></div>' +
     '<div class="sec">Blocked on Wi-Fi</div><div class="card">' + rows(wl.list, 'w') + '</div>' +
@@ -777,6 +786,44 @@ views.block = async function (alive) {
       go('block');
     } catch (e) { toast(e.message); }
   });
+  $('#chk2').onclick = async () => {
+    const b = $('#chk2'), o = $('#chkout'); b.disabled = true; o.hidden = false; const lines = []; let plain = '';
+    const say = (t, cls, raw) => { lines.push('<div class="' + (cls || '') + '" style="margin:5px 0">' + t + '</div>'); plain += (raw || t.replace(/<[^>]+>/g, '')) + '\n'; o.innerHTML = lines.join(''); };
+    try {
+      say('Checking…');
+      let w = await loadWBlocked();
+      if (!w.st.on || w.st.mode === '1') {
+        say('The Wi-Fi filter was ' + stateText(w.st) + ', so nobody was being blocked. Switching it to blocklist…', 'err');
+        const st = await setWFilter('block'); say('Filter is now ' + stateText(st), st.on ? 'okc' : 'err'); w = await loadWBlocked();
+      } else say('Filter is ' + stateText(w.st), 'okc');
+      say(w.list.length + ' device(s) in the blocklist');
+      w.list.forEach((x) => say('<span class="sm">' + PV(x.mac) + ' · ' + esc(x.f.filter((v) => v && v !== x.mac && !/^InternetGatewayDevice/.test(v)).join(' · ')) + '</span>', '', 'entry ' + x.mac + ' ' + x.f.join(' | ')));
+      const on = await assocMacs(); const leaks = w.list.filter((x) => on.includes(x.mac));
+      say('On Wi-Fi right now: ' + on.length + ' device(s)');
+      if (!leaks.length) say('None of the blocked devices are on Wi-Fi.', 'okc');
+      else {
+        say(leaks.length + ' blocked device(s) are still on Wi-Fi: ' + leaks.map((x) => PV(getNicks()[x.mac] || x.mac)).join(', ') + '. The filter stops devices joining; it does not disconnect ones already online.', 'err');
+        lines.push('<div style="margin-top:10px"><button class="b bad full" id="kick">Restart Wi-Fi to cut them off</button><div class="sm" style="margin-top:6px">Everyone on Wi-Fi drops for a few seconds and rejoins. Same as saving your Wi-Fi settings again; name and password stay the same.</div></div>'); o.innerHTML = lines.join('');
+        $('#kick').onclick = async () => {
+          const k = $('#kick'); if (k.dataset.c !== '1') { k.dataset.c = '1'; k.textContent = 'Tap again to confirm'; return; }
+          k.disabled = true; k.textContent = 'Restarting Wi-Fi…';
+          try {
+            const r = await api('GET', '/html/amp/wlanbasic/WlanBasic.asp', BRH); const ob = parseObjs(r.body);
+            const ww = ob.find((x) => x.type === 'stWlan' && /WLANConfiguration\.1$/.test(x.f[0] || '')); const kk = ob.find((x) => x.type === 'stPreSharedKey' && /WLANConfiguration\.1\./.test(x.f[0] || ''));
+            if (!ww || !ww.f[3] || !kk || !kk.f[1]) throw new Error('Could not read the Wi-Fi name and password, nothing changed');
+            await writeWifi(ww.f[3], kk.f[1]);
+            k.textContent = 'Waiting for devices to rejoin…'; await sleep(25000);
+            const on2 = await assocMacs(); const still = leaks.filter((x) => on2.includes(x.mac));
+            if (!still.length) say('Cut off. The blocked device(s) are no longer on Wi-Fi.', 'okc');
+            else say('Still on Wi-Fi after the restart: ' + still.map((x) => PV(x.mac)).join(', ') + '. The router is NOT enforcing the filter for these. Tap Copy and send me this.', 'err');
+            const cp = document.createElement('button'); cp.className = 'b ghost sm2'; cp.textContent = 'Copy result'; cp.onclick = () => copyText(plain); o.appendChild(cp);
+          } catch (e) { say(esc(e.message), 'err'); }
+          k.hidden = true;
+        };
+      }
+    } catch (e) { say(esc(e.message), 'err'); }
+    b.disabled = false;
+  };
   swHandler('wsw', true); swHandler('lsw', false);
   $('#add').onclick = async () => {
     const mac = $('#mac').value.trim();
