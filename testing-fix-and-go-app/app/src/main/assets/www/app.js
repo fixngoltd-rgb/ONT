@@ -996,7 +996,7 @@ async function saveEditComment(id, btn){
 function onPhotoChosen(e){
   const file = e.target.files[0];
   if(!file) return;
-  pendingPhoto = file;
+  pendingPhoto = file; e.target.value = '';
   renderPhotoPreview();
 }
 
@@ -1005,7 +1005,7 @@ function renderPhotoPreview(){
   if(!pendingPhoto){ wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
   const url = URL.createObjectURL(pendingPhoto);
   wrap.style.display = 'flex';
-  wrap.innerHTML = `<img src="${url}">`;
+  wrap.innerHTML = (pendingPhoto.type||'').startsWith('image/') ? `<img src="${url}">` : `<div style="padding:10px 14px;font-weight:700;">&#128196; ${String(pendingPhoto.name||'file').replace(/</g,'&lt;')}</div>`;
 }
 
 async function postComment(){
@@ -1027,7 +1027,7 @@ async function postComment(){
     uploaded = { file_url: urlData.publicUrl, file_name: pendingPhoto.name || fileName, mime_type: pendingPhoto.type || null };
   }
 
-  const fullMessage = message || '[Photo attached]';
+  const fullMessage = message || ((pendingPhoto.type||'').startsWith('image/') ? '[Photo attached]' : '[File attached]');
   const { data: newComment, error } = await sb.from('board_comments').insert([{
     job_id: currentDetailId, author, message: fullMessage, author_user_id: CURRENT_USER.id
   }]).select().single();
@@ -1216,7 +1216,7 @@ async function openWorkReport(){
     const { data: lb, error: le } = await sb.from('job_photo_labels').select('file_url,section,tag,caption').eq('job_id', j.id);
     if(!le) (lb || []).forEach(r => { WR_LABELS[r.file_url] = r; });
   } catch(e){}
-  document.getElementById('wr-version').value = 'v1'; wrVersionChanged();
+  { const d = document.getElementById('wr-date'); if(d && !d.value) d.value = new Date().toLocaleDateString('en-CA', { timeZone: UK_TZ }); }
   renderWrPhotos();
 }
 function wrPhotoTime(f){
@@ -1232,12 +1232,6 @@ function wrPhotoTime(f){
   m = n.match(/(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})/);
   if(m) return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
   return f.uploaded_at ? Date.parse(f.uploaded_at) : 0;
-}
-function wrVersionChanged(){
-  const v2 = document.getElementById('wr-version').value === 'v2';
-  document.getElementById('wr-date-wrap').style.display = v2 ? 'inline-flex' : 'none';
-  const d = document.getElementById('wr-date');
-  if(v2 && d && !d.value){ d.value = new Date().toLocaleDateString('en-CA', { timeZone: UK_TZ }); }
 }
 function toggleAllWrPhotos(){
   const all = WR_PHOTOS.length && WR_PHOTOS.every(p => p.selected);
@@ -1281,12 +1275,14 @@ async function addWrPhotos(e){
     const { error: ue } = await sb.storage.from('job-files').upload(path, f);
     if(ue){ showToast('Upload failed: ' + ue.message); continue; }
     const url = sb.storage.from('job-files').getPublicUrl(path).data.publicUrl;
-    const { error: de } = await sb.from('job_files').insert([{ job_id: jobId, file_name: f.name, file_url: url, mime_type: f.type || 'image/jpeg' }]);
+    const isImg = (f.type || '').startsWith('image/');
+    const { error: de } = await sb.from('job_files').insert([{ job_id: jobId, file_name: f.name, file_url: url, mime_type: f.type || (/\.pdf$/i.test(f.name) ? 'application/pdf' : 'image/jpeg') }]);
     if(de){ showToast('Saved the photo but not its record: ' + de.message); continue; }
+    if(!isImg){ ok++; continue; }
     WR_PHOTOS.push({ url, name: f.name, selected: true, _n: WR_PHOTOS.reduce((m, q) => Math.max(m, q._n || 0), 0) + 1, _t: wrPhotoTime({ file_name: f.name, uploaded_at: new Date().toISOString() }), _u: new Date().toISOString() }); ok++; renderWrPhotos();
   }
-  if(btn){ btn.disabled = false; btn.textContent = '+ Add photos'; }
-  if(ok){ showToast(ok + ' photo' + (ok > 1 ? 's' : '') + ' added to the job'); loadJobFiles(jobId); }
+  if(btn){ btn.disabled = false; btn.textContent = '+ Add photos / PDFs'; }
+  if(ok){ showToast(ok + ' file' + (ok > 1 ? 's' : '') + ' added to the job'); loadJobFiles(jobId); }
 }
 function toggleWrPhoto(i){
   const p = WR_PHOTOS[i]; p.selected = !p.selected;
@@ -1309,12 +1305,10 @@ async function buildWrBlob(){
   await saveWorkReportText();
   await loadWrLib();
   const text = document.getElementById('wr-text').value;
-  if(document.getElementById('wr-version').value === 'v2'){
+  {
     const dv = document.getElementById('wr-date').value;
     const date = dv ? new Date(dv + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
     WR_BLOB = await window.WorkReport2.makePdf({ address: j.address, text, date, photos: WR_PHOTOS.filter(p => p.selected).map(p => Object.assign({ url: p.url }, WR_LABELS[p.url] ? { section: WR_LABELS[p.url].section || undefined, tag: WR_LABELS[p.url].tag || undefined, caption: WR_LABELS[p.url].caption || undefined } : {})) });
-  } else {
-    WR_BLOB = await window.WorkReport.makePdf({ address: j.address, text, photos: WR_PHOTOS.filter(p => p.selected).map(p => p.url) });
   }
   WR_BLOB_NAME = wrFileName(j);
   return WR_BLOB;
