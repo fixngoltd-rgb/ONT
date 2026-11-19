@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '36';
+const UI_VER = '37';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -243,6 +243,11 @@ async function loadDevices() {
     if (!d.name) d.name = d.other.find((x) => /[a-z]/i.test(x) && !/^[0-9a-f:.-]+$/i.test(x) && !/^(dhcp|static|lan\d*|ssid\d*|wifi)$/i.test(x)) || '';
   });
   list.forEach((d) => { d.online = /^(online|active)$/i.test(d.status); });
+  // The device table lags by minutes. The Wi-Fi association list is live, so use it for Wi-Fi devices.
+  try {
+    const live = await assocMacs();
+    if (live.ok) list.forEach((d) => { if (d.mac && (isWireless(d) || live.includes(d.mac.toLowerCase()))) d.online = live.includes(d.mac.toLowerCase()); });
+  } catch (e) { /* fall back to the router's table */ }
   return list;
 }
 
@@ -530,6 +535,7 @@ async function setWFilter(mode) { // 'off' | 'block' | 'allow'
 async function assocMacs() {
   const r = await api('POST', '/html/amp/wlaninfo/getassociateddeviceinfo.asp', Object.assign({}, BRH, FORM), '');
   const out = []; (r.body || '').replace(/stAssociatedDevice\("[^"]*","([0-9a-f:]{17})"/gi, (m, x) => { out.push(x.toLowerCase()); return m; });
+  out.ok = /new\s+Array\(/.test(r.body || '');
   return out;
 }
 async function unblockAny(mac) {
@@ -622,7 +628,16 @@ views.devices = async function (alive) {
   };
   $('#q').oninput = (e) => { devQuery = e.target.value; draw(); };
   draw();
+  window.__devRefresh = async () => {
+    const f = await loadDevices();
+    f.sort((x, y) => (y.online - x.online) || (ipNum(x.ip) - ipNum(y.ip)));
+    list.splice(0, list.length, ...f);
+    $('#sub').textContent = list.filter((d) => d.online).length + ' online · ' + list.length + ' known';
+    draw();
+  };
 };
+// While the Devices tab is open and on screen, refresh it every few seconds.
+setInterval(() => { if (current === 'devices' && !document.hidden && $('#sheet').hidden && window.__devRefresh && document.activeElement.id !== 'q') window.__devRefresh().catch(() => {}); }, 6000);
 
 function deviceSheet(d, isBlocked, dn) {
   const blocked = isBlocked(d.mac);
