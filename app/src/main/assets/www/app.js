@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '35';
+const UI_VER = '36';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -800,6 +800,13 @@ views.block = async function (alive) {
       w.list.forEach((x) => say('<span class="sm">' + PV(x.mac) + ' · ' + esc(x.f.filter((v) => v && v !== x.mac && !/^InternetGatewayDevice/.test(v)).join(' · ')) + '</span>', '', 'entry ' + x.mac + ' ' + x.f.join(' | ')));
       const on = await assocMacs(); const leaks = w.list.filter((x) => on.includes(x.mac));
       say('On Wi-Fi right now: ' + on.length + ' device(s)');
+      try {
+        const devs = await loadDevices(); const nk = getNicks();
+        const rowsHtml = on.map((m, i) => { const d = devs.find((x) => x.mac && x.mac.toLowerCase() === m); const blocked = w.list.some((x) => x.mac === m); return '<div class="row" style="padding:8px 0"><div class="grow"><div class="name">' + PV((d && (nk[m] || d.name || d.devType)) || 'Unknown device') + '</div><div class="sm">' + PV(m + (d && d.ip ? ' · ' + d.ip : '')) + '</div></div>' + (blocked ? '<span class="chip blocked">Blocked</span>' : '<button class="b soft sm2" data-bm="' + m + '">Block</button>') + '</div>'; }).join('');
+        lines.push('<div class="card" style="margin:8px 0;padding:4px 14px">' + rowsHtml + '</div>'); o.innerHTML = lines.join('');
+        plain += 'On Wi-Fi: ' + on.join(', ') + '\n';
+        o.querySelectorAll('button[data-bm]').forEach((bb) => bb.onclick = async () => { bb.disabled = true; try { const r = await blockDevice(bb.dataset.bm, true); toast(r.ok && r.on ? 'Blocked' : 'The router did not accept it', 3500); bb.replaceWith(Object.assign(document.createElement('span'), { className: 'chip blocked', textContent: r.ok ? 'Blocked' : 'Failed' })); } catch (e) { toast(e.message); bb.disabled = false; } });
+      } catch (e) { /* names are optional */ }
       if (!leaks.length) say('None of the blocked devices are on Wi-Fi.', 'okc');
       else {
         say(leaks.length + ' blocked device(s) are still on Wi-Fi: ' + leaks.map((x) => PV(getNicks()[x.mac] || x.mac)).join(', ') + '. The filter stops devices joining; it does not disconnect ones already online.', 'err');
