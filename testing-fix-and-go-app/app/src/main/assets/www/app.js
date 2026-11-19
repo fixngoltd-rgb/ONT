@@ -243,6 +243,7 @@ async function sbAction(what){
   else if(what === 'team') openTeamSheet('team');
   else if(what === 'tech') openTeamSheet('tech');
   else if(what === 'desk') openActionDesk();
+  else if(what === 'notes') navNotes();
   else if(what === 'theme') toggleTheme();
   else if(what === 'refresh'){
     showToast('Updating...');
@@ -886,7 +887,7 @@ window.onBack = function(){
     closeDetail();
     return 'false';
   }
-  if(document.getElementById('plan-screen').classList.contains('open') || document.getElementById('notif-screen').classList.contains('open')){ navBoard(); return 'false'; }
+  if(document.getElementById('plan-screen').classList.contains('open') || document.getElementById('notif-screen').classList.contains('open') || document.getElementById('notes-screen').classList.contains('open')){ navBoard(); return 'false'; }
   return 'true';
 };
 
@@ -1644,7 +1645,8 @@ function setNav(id){
   ['bn-board', 'bn-plan', 'bn-alerts'].forEach(x => document.getElementById(x).classList.toggle('active', x === id));
 }
 function closeTabViews(){
-  ['plan-screen', 'notif-screen'].forEach(id => document.getElementById(id).classList.remove('open'));
+  try{ notesFlush(); }catch(e){}
+  ['plan-screen', 'notif-screen', 'notes-screen'].forEach(id => document.getElementById(id).classList.remove('open'));
 }
 function navBoard(){ closeTabViews(); setNav('bn-board'); }
 function navPlan(){
@@ -1653,6 +1655,71 @@ function navPlan(){
   setNav('bn-plan');
   if(isAdminUser()) loadTodos().then(renderPlan); else renderPlan();
 }
+
+/* ===== PERSONAL NOTES (board_notes: one private row per user, admin can read all) ===== */
+let NOTES_VIEW_ID = null, NOTES_TIMER = null, NOTES_DIRTY = false, NOTES_SAVING = false;
+function notesStatus(t){ const el = document.getElementById('notes-status'); if(el) el.textContent = t; }
+async function navNotes(){
+  closeTabViews();
+  document.getElementById('notes-screen').classList.add('open');
+  setNav('');
+  document.getElementById('nts-date').textContent = new Date().toLocaleDateString('en-GB', { timeZone: UK_TZ, weekday: 'long', day: 'numeric', month: 'long' });
+  const sel = document.getElementById('notes-who');
+  if(isAdminUser()){
+    if(!USER_DIR.length) await loadUserDirectory();
+    const users = USER_DIR.filter(u => u.id !== CURRENT_USER.id);
+    sel.innerHTML = '<option value="' + CURRENT_USER.id + '">My notes</option>' + users.map(u => '<option value="' + u.id + '">' + escHtml(u.name || 'User') + ' (' + escHtml(u.role || '') + ')</option>').join('');
+    sel.style.display = users.length ? '' : 'none';
+  } else { sel.style.display = 'none'; }
+  sel.value = CURRENT_USER.id;
+  await notesPickUser(CURRENT_USER.id);
+}
+function notesSummary(){
+  const jobs = JOBS.filter(j => canSeeJob(j) && j.status !== 'completed' && j.status !== 'cancelled');
+  const today = todayDateStr(), d = j => j.scheduled_at ? ukDate(j.scheduled_at) : null;
+  const n = [
+    ['Today', jobs.filter(j => !j.quote_needed && d(j) === today).length],
+    ['Coming up', jobs.filter(j => !j.quote_needed && d(j) && d(j) > today).length],
+    ['Missed', jobs.filter(j => !j.quote_needed && d(j) && d(j) < today).length],
+    ['Needs booking', jobs.filter(j => !j.quote_needed && !j.scheduled_at && ['active', 'contacted'].includes(j.status)).length],
+    ['Prices to give', jobs.filter(j => j.quote_needed && !j.quoted).length]
+  ];
+  document.getElementById('nts-chips').innerHTML = n.map(x => '<span style="background:var(--card);border:1px solid var(--border);border-radius:999px;padding:5px 11px;font-size:0.8rem;font-weight:700;"><b style="color:#2563eb;margin-right:4px;">' + x[1] + '</b>' + x[0] + '</span>').join('');
+  document.getElementById('nts-prog').textContent = jobs.length ? jobs.length + ' job' + (jobs.length === 1 ? '' : 's') + ' on your plate' : 'Nothing assigned to you right now';
+}
+async function notesPickUser(id){
+  await notesFlush();
+  const want = id || CURRENT_USER.id;
+  NOTES_VIEW_ID = want;
+  const own = want === CURRENT_USER.id;
+  const pad = document.getElementById('notes-pad');
+  notesSummary();
+  pad.value = ''; pad.readOnly = true; notesStatus('Loading...');
+  const { data, error } = await sb.from('board_notes').select('body,updated_at').eq('user_id', want).maybeSingle();
+  if(NOTES_VIEW_ID !== want) return;
+  if(error){ notesStatus('Could not load notes: ' + error.message); return; }
+  pad.value = (data && data.body) || '';
+  pad.readOnly = !own;
+  notesStatus(own ? (data ? 'Saved' : 'Nothing saved yet') : 'Read only (you are viewing someone else\'s notes)');
+}
+function notesTyped(){
+  if(NOTES_VIEW_ID !== CURRENT_USER.id) return;
+  NOTES_DIRTY = true; notesStatus('Typing...');
+  clearTimeout(NOTES_TIMER); NOTES_TIMER = setTimeout(notesFlush, 800);
+}
+async function notesFlush(){
+  clearTimeout(NOTES_TIMER);
+  if(!NOTES_DIRTY || NOTES_SAVING || !CURRENT_USER) return;
+  const pad = document.getElementById('notes-pad'); if(!pad) return;
+  NOTES_DIRTY = false; NOTES_SAVING = true; notesStatus('Saving...');
+  const { error } = await sb.from('board_notes').upsert({ user_id: CURRENT_USER.id, body: pad.value, updated_at: new Date().toISOString() });
+  NOTES_SAVING = false;
+  if(error){ NOTES_DIRTY = true; notesStatus('Could not save: ' + error.message); return; }
+  notesStatus(NOTES_DIRTY ? 'Typing...' : 'Saved');
+  if(NOTES_DIRTY) NOTES_TIMER = setTimeout(notesFlush, 800);
+}
+document.addEventListener('visibilitychange', () => { if(document.hidden) notesFlush(); });
+
 function navAlerts(){
   closeTabViews();
   document.getElementById('notif-screen').classList.add('open');

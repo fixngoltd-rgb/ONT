@@ -81,6 +81,16 @@
   <div id="notif-body"></div>
 </div>
 
+<div id="notes-screen" class="tabview">
+  <div class="tv-head"><div class="tv-title">My notes</div><div class="tv-date" id="nts-date"></div><div class="tv-sub" id="nts-prog"></div></div>
+  <div style="padding:14px;">
+    <div id="nts-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;"></div>
+    <select id="notes-who" style="display:none;width:100%;padding:10px;margin-bottom:10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);" onchange="notesPickUser(this.value)"></select>
+    <textarea id="notes-pad" placeholder="Write anything you want to remember. It saves by itself as you type, and only you (and the admin) can see it." oninput="notesTyped()" onblur="notesFlush()" style="width:100%;min-height:50vh;box-sizing:border-box;padding:12px;border:1px solid var(--border);border-radius:10px;background:var(--card);color:var(--text);font-family:inherit;font-size:1rem;line-height:1.5;"></textarea>
+    <div id="notes-status" style="font-size:0.78rem;color:var(--muted);margin-top:6px;min-height:1em;"></div>
+  </div>
+</div>
+
 <div id="mention-pop"></div>
 
 <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeSidebar()"></div>
@@ -96,6 +106,9 @@
     </button>
     <button class="sb-item" id="sb-desk" onclick="sbAction('desk')" style="display:none;">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></svg><span>Action Desk</span>
+    </button>
+    <button class="sb-item" onclick="sbAction('notes')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h10l4 4v14H5zM14 3v5h5M8 13h8M8 17h6"/></svg><span>My notes</span>
     </button>
     <button class="sb-item" onclick="sbAction('refresh')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg><span>Update</span>
