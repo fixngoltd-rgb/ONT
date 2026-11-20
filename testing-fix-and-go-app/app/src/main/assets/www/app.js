@@ -1205,9 +1205,9 @@ async function openWorkReport(){
   ta.value = WR_LAST_SAVED;
   const { data: files } = await sb.from('job_files').select('file_url,file_name,mime_type,uploaded_at').eq('job_id', j.id).order('uploaded_at', { ascending: true });
   const seen = new Set(); WR_PHOTOS = [];
-  (files || []).filter(f => (f.mime_type || '').startsWith('image/')).forEach(f => {
+  (files || []).filter(f => (f.mime_type || '').startsWith('image/') || (f.mime_type || '').startsWith('video/') || /\.(mp4|mov|webm)$/i.test(f.file_name || '')).forEach(f => {
     if(seen.has(f.file_url)) return; seen.add(f.file_url);
-    WR_PHOTOS.push({ url: f.file_url, name: f.file_name, selected: true, _t: wrPhotoTime(f), _u: f.uploaded_at || '' });
+    WR_PHOTOS.push({ url: f.file_url, name: f.file_name, video: (f.mime_type || '').startsWith('video/') || /\.(mp4|mov|webm)$/i.test(f.file_name || ''), selected: true, _t: wrPhotoTime(f), _u: f.uploaded_at || '' });
   });
   // oldest first, newest last (capture time from the file name first, then upload time)
   WR_PHOTOS.sort((a, b) => (a._t - b._t) || String(a._u).localeCompare(String(b._u)));
@@ -1262,7 +1262,7 @@ function renderWrPhotos(){
   g.innerHTML = WR_PHOTOS.map((p, i) => {
     const n = p.selected ? order.indexOf(p) + 1 : 0;
     const lab = WR_LABELS[p.url] && WR_LABELS[p.url].caption ? ' ' + escHtml(WR_LABELS[p.url].caption) : '';
-    return `<div class="wr-photo${p.selected ? ' on' : ''}" onclick="toggleWrPhoto(${i})"><img src="${escHtml(p.url)}">${p.selected ? `<span>${n}</span>` : ''}<em class="wr-cap"><b>#${p._n || ''}</b>${lab}</em></div>`;
+    return `<div class="wr-photo${p.selected ? ' on' : ''}" onclick="toggleWrPhoto(${i})">${p.video ? `<video src="${escHtml(p.url)}#t=0.5" preload="metadata" muted playsinline style="width:100%;height:100%;object-fit:cover;display:block;background:#0f172a;pointer-events:none;"></video><b style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:30px;height:30px;border-radius:50%;background:rgba(15,23,42,.7);color:#fff;font-size:14px;line-height:30px;text-align:center;border:2px solid #fff;">&#9654;</b>` : `<img src="${escHtml(p.url)}">`}${p.selected ? `<span>${n}</span>` : ''}<em class="wr-cap"><b>#${p._n || ''}</b>${lab}</em></div>`;
   }).join('');
 }
 async function addWrPhotos(e){
@@ -1276,13 +1276,14 @@ async function addWrPhotos(e){
     const { error: ue } = await sb.storage.from('job-files').upload(path, f);
     if(ue){ showToast('Upload failed: ' + ue.message); continue; }
     const url = sb.storage.from('job-files').getPublicUrl(path).data.publicUrl;
-    const isImg = (f.type || '').startsWith('image/');
-    const { error: de } = await sb.from('job_files').insert([{ job_id: jobId, file_name: f.name, file_url: url, mime_type: f.type || (/\.pdf$/i.test(f.name) ? 'application/pdf' : 'image/jpeg') }]);
+    const isVid = (f.type || '').startsWith('video/') || /\.(mp4|mov|webm)$/i.test(f.name || '');
+    const isImg = (f.type || '').startsWith('image/') || isVid;
+    const { error: de } = await sb.from('job_files').insert([{ job_id: jobId, file_name: f.name, file_url: url, mime_type: f.type || (/\.pdf$/i.test(f.name) ? 'application/pdf' : isVid ? 'video/mp4' : 'image/jpeg') }]);
     if(de){ showToast('Saved the photo but not its record: ' + de.message); continue; }
     if(!isImg){ ok++; continue; }
-    WR_PHOTOS.push({ url, name: f.name, selected: true, _n: WR_PHOTOS.reduce((m, q) => Math.max(m, q._n || 0), 0) + 1, _t: wrPhotoTime({ file_name: f.name, uploaded_at: new Date().toISOString() }), _u: new Date().toISOString() }); ok++; renderWrPhotos();
+    WR_PHOTOS.push({ url, name: f.name, video: isVid, selected: true, _n: WR_PHOTOS.reduce((m, q) => Math.max(m, q._n || 0), 0) + 1, _t: wrPhotoTime({ file_name: f.name, uploaded_at: new Date().toISOString() }), _u: new Date().toISOString() }); ok++; renderWrPhotos();
   }
-  if(btn){ btn.disabled = false; btn.textContent = '+ Add photos / PDFs'; }
+  if(btn){ btn.disabled = false; btn.textContent = '+ Add photos / videos / PDFs'; }
   if(ok){ showToast(ok + ' file' + (ok > 1 ? 's' : '') + ' added to the job'); loadJobFiles(jobId); }
 }
 function toggleWrPhoto(i){
@@ -1301,6 +1302,25 @@ function wrFileName(j){
   return [lead, what, 'Work Report'].filter(Boolean).join(' ').replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim() + '.pdf';
 }
 
+/* A PDF cannot play video, so a video goes into the report as a still frame with a play button; tapping it opens the video. */
+async function wrVideoPoster(url){
+  const W = 1280, H = 720;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const g = cv.getContext('2d'); g.fillStyle = '#0f172a'; g.fillRect(0, 0, W, H);
+  try {
+    const v = document.createElement('video'); v.crossOrigin = 'anonymous'; v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
+    await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error('video load failed')); setTimeout(() => rej(new Error('video timeout')), 15000); });
+    await new Promise(res => { v.onseeked = res; v.currentTime = Math.min(0.5, (v.duration || 1) / 2); setTimeout(res, 4000); });
+    const vw = v.videoWidth || W, vh = v.videoHeight || H;
+    cv.width = vw; cv.height = vh; g.drawImage(v, 0, 0, vw, vh);
+  } catch(e){ /* keep the dark tile */ }
+  const r = Math.min(cv.width, cv.height) * 0.11, cx = cv.width / 2, cy = cv.height / 2;
+  g.fillStyle = 'rgba(15,23,42,0.68)'; g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.fill();
+  g.lineWidth = Math.max(3, r * 0.07); g.strokeStyle = 'rgba(255,255,255,0.95)'; g.stroke();
+  g.fillStyle = '#fff'; g.beginPath(); g.moveTo(cx - r * 0.28, cy - r * 0.45); g.lineTo(cx - r * 0.28, cy + r * 0.45); g.lineTo(cx + r * 0.5, cy); g.closePath(); g.fill();
+  const blob = await new Promise(res => cv.toBlob(res, 'image/jpeg', 0.88));
+  return URL.createObjectURL(blob);
+}
 async function buildWrBlob(){
   const j = JOBS.find(x => x.id === currentDetailId); if(!j) throw new Error('No job open');
   await saveWorkReportText();
@@ -1309,7 +1329,9 @@ async function buildWrBlob(){
   {
     const dv = document.getElementById('wr-date').value;
     const date = dv ? new Date(dv + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
-    WR_BLOB = await window.WorkReport2.makePdf({ address: j.address, text, date, photos: WR_PHOTOS.filter(p => p.selected).map(p => Object.assign({ url: p.url }, WR_LABELS[p.url] ? { section: WR_LABELS[p.url].section || undefined, tag: WR_LABELS[p.url].tag || undefined, caption: WR_LABELS[p.url].caption || undefined } : {})) });
+    const sel = WR_PHOTOS.filter(p => p.selected); const srcs = [];
+    for(const p of sel) srcs.push(p.video ? await wrVideoPoster(p.url) : p.url);
+    WR_BLOB = await window.WorkReport2.makePdf({ address: j.address, text, date, photos: sel.map((p, ix) => Object.assign({ url: srcs[ix], link: p.video ? p.url : undefined }, WR_LABELS[p.url] ? { section: WR_LABELS[p.url].section || undefined, tag: WR_LABELS[p.url].tag || undefined, caption: WR_LABELS[p.url].caption || undefined } : {})) });
   }
   WR_BLOB_NAME = wrFileName(j);
   return WR_BLOB;

@@ -246,7 +246,7 @@
     const FULLW = bodyW, MAXSZ = 11.5;
     if(plainIn && photosIn.length >= 1 && photosIn.length <= 4){
       const n = photosIn.length, gap = 10, avail = LIM1 - bodyTop + 10;
-      sideLoaded = []; for(let i = 0; i < n; i++) sideLoaded.push(await loadSized(photosIn[i].url));
+      sideLoaded = []; for(let i = 0; i < n; i++) sideLoaded.push(Object.assign(await loadSized(photosIn[i].url), { link: photosIn[i].link }));
       // try one and two columns; keep the option whose tiles stay closest to the photos' own shape while filling the height beside the text
       let bestOpt = null;
       [1, 2].forEach(cols => {
@@ -279,6 +279,7 @@
         for(let c = 0; c < side.cols; c++){
           const i = r * side.cols + c; if(i >= side.n) break;
           doc.addImage(coverData(loaded[i].cv, side.tw, rowsH[r]), 'JPEG', side.x + c * (side.tw + side.gap), y0, side.tw, rowsH[r], undefined, 'FAST');
+          if(loaded[i].link) doc.link(side.x + c * (side.tw + side.gap), y0, side.tw, rowsH[r], { url: loaded[i].link });
         }
         y0 += rowsH[r] + side.gap;
       }
@@ -301,6 +302,7 @@
         row.idx.forEach(q => {
           const p = grp[q], tw = row.full ? (FW - (row.idx.length - 1) * GAP) * p.ar / sumAr : p.ar * row.h;
           doc.addImage(coverData(p.cv, tw, th), 'JPEG', x, y, tw, th, undefined, 'FAST');
+          if(p.link) doc.link(x, y, tw, th, { url: p.link });
           if(p.tag){
             const lab = String(p.tag).toUpperCase(); font(true, 6.5);
             const tgw = doc.getTextWidth(lab) + 12;
