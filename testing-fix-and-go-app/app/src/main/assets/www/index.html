@@ -238,6 +238,30 @@
   <div id="wr-pages"></div>
 </div>
 
+<div id="ql-screen">
+  <div class="detail-header-bar">
+    <button class="detail-back-btn" onclick="closeQuoteLinks()">&larr;</button>
+    <div class="ht"><div class="title" style="font-size:1.05rem;">Quote link</div><div class="ref" id="ql-addr" style="font-size:0.72rem;color:var(--muted2);font-weight:700;"></div></div>
+  </div>
+  <div id="ql-body"></div>
+</div>
+<div id="ql-pick-screen">
+  <div class="detail-header-bar">
+    <button class="detail-back-btn" onclick="qlClosePick()">&larr;</button>
+    <div class="ht"><div class="title" style="font-size:1.05rem;">Pick photos and videos</div></div>
+    <button class="save-btn" onclick="qlPickDone()">Add</button>
+  </div>
+  <div id="ql-pick-grid"></div>
+</div>
+<div id="ql-view-screen">
+  <div class="detail-header-bar">
+    <button class="detail-back-btn" onclick="qlViewClose()">&larr;</button>
+    <div class="ht"><div class="title" style="font-size:1.05rem;">Full quote</div><div class="ref" id="ql-view-sub" style="font-size:0.72rem;color:var(--muted2);font-weight:700;"></div></div>
+  </div>
+  <div id="ql-view-body"></div>
+</div>
+<input type="file" id="ql-upload-input" accept="image/*,video/*" multiple style="display:none;" onchange="qlUploadPicked(this)">
+
 <datalist id="tech-names-list"></datalist>
 
 <div id="tech-form-screen">

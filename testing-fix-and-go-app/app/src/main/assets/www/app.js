@@ -692,6 +692,7 @@ function renderInfoView(j, columnKey){
     </div>
     ${actionBoxHtml}
     ${isAdmin ? `<button class="wr-open" onclick="openWorkReport()">&#128196; Work Report PDF</button>
+    <button class="wr-open" style="background:#0f766e;" onclick="openQuoteLinks()">&#128279; Quote link</button>
     <div class="info-field"><label>Email thread (admin)</label><div class="val" id="email-link-box">Loading...</div></div>` : ''}
     <div class="info-field"><label>Status</label><div class="val"><span class="status-pill status-${j.status}">${escHtml(j.status)}</span></div></div>
     <div class="info-field"><label>Address</label><div class="val">${escHtml(j.address || '—')}</div></div>
@@ -871,6 +872,9 @@ function switchDetailTab(tab){
 window.onBack = function(){
   if(document.getElementById('tech-form-screen').classList.contains('open')){ closeTechForm(); return 'false'; }
   if(document.getElementById('viewer-screen').classList.contains('open')){ closeViewer(); return 'false'; }
+  if(document.getElementById('ql-pick-screen').classList.contains('open')){ qlClosePick(); return 'false'; }
+  if(document.getElementById('ql-view-screen').classList.contains('open')){ qlViewClose(); return 'false'; }
+  if(document.getElementById('ql-screen').classList.contains('open')){ closeQuoteLinks(); return 'false'; }
   if(document.getElementById('wr-preview-screen').classList.contains('open')){ closeWrPreview(); return 'false'; }
   if(document.getElementById('wr-screen').classList.contains('open')){ closeWorkReport(); return 'false'; }
   if(document.getElementById('newjob-screen').classList.contains('open')){
@@ -1785,7 +1789,7 @@ function renderNotifs(){
   document.getElementById('nt-sub').textContent = unread ? unread + ' unread' : 'All caught up';
   body.innerHTML = NOTIFS.length ? NOTIFS.map(n => `
     <div class="nt-item ${n.read ? '' : 'unread'}" onclick="openNotif('${n.id}')">
-      <div class="nt-ico">${n.kind === 'mention' ? '&#128172;' : '&#128204;'}</div>
+      <div class="nt-ico">${n.kind === 'mention' ? '&#128172;' : n.kind === 'quote' ? '&#128183;' : '&#128204;'}</div>
       <div class="nt-main"><div class="nt-t">${escHtml(n.title)}</div>${n.body ? `<div class="nt-b">${escHtml(n.body)}</div>` : ''}<div class="nt-when">${timeAgo(n.created_at)}</div></div>
     </div>`).join('') : '<div class="empty-state">Nothing yet. You will see a message here when a job is assigned to you or someone mentions you.</div>';
 }
@@ -1801,6 +1805,7 @@ async function openNotif(id){
   if(n.job_id && JOBS.find(j => j.id === n.job_id)){
     openDetail(n.job_id, null);
     if(n.kind === 'mention') switchDetailTab('comments');
+    if(n.kind === 'quote' && isAdminUser()) openQuoteLinks().then(() => { const r = QL && QL.reqs.filter(x => x.status === 'submitted').sort((x, y) => String(y.submitted_at).localeCompare(String(x.submitted_at)))[0]; if(r) qlView(r.id); });
   } else if(n.job_id){ showToast('That job is no longer on the board'); }
 }
 async function markAllNotifsRead(){
@@ -2015,3 +2020,200 @@ async function initNotifications(){
   const orig = fetchAllJobs;
   fetchAllJobs = async function(){ await orig.apply(this, arguments); LAST_JOBS_REFRESH = Date.now(); if(CURRENT_USER) try { renderPlan(); } catch(e){} };
 })();
+
+
+/* ===== QUOTE LINK (admin) =====
+   Same system as the desktop board: one editable scope per job, one private link per technician
+   (quote.html on the board site), a one-time price submission, and the received quotes. */
+const QL_PAGE = 'https://fixngoltd-rgb.github.io/job-tracker/quote.html';
+let QL = null, QL_PICK = null, QL_PICK_ITEM = -1, QL_UPLOAD_ITEM = -1;
+const qlAttr = s => escHtml(s).replace(/"/g, '&quot;');
+function qlToken(){ const b = new Uint8Array(16); crypto.getRandomValues(b); return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
+function qlLinkFor(tok){ return QL_PAGE + '?t=' + tok; }
+function qlMoney(n){ return '£' + (Math.round(Number(n) * 100) / 100).toFixed(2).replace(/\.00$/, ''); }
+function qlDefaults(j){
+  const pc = (j.address || '').match(/[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}/i);
+  const m = (j.description || '').match(/WORK REQUIRED:\s*([\s\S]*?)(?:\n\s*\n|\nNOTES:|$)/i);
+  const items = [];
+  if(m) m[1].split('\n').map(x => x.replace(/^\s*-\s*/, '').replace(/^QUOTE:\s*/i, '').trim()).filter(Boolean).forEach(t => items.push({ title: t.split(/\s+/).slice(0, 5).join(' '), text: t, photos: [], videos: [] }));
+  return { location: pc ? pc[0].toUpperCase() : (j.address || ''), title: (j.title || '').replace(/^Quotation Needed\s*-\s*/i, ''), scope: items };
+}
+async function openQuoteLinks(){
+  if(!isAdminUser() || !currentDetailId) return;
+  const j = JOBS.find(x => x.id === currentDetailId); if(!j) return;
+  document.getElementById('ql-addr').textContent = (j.ref || '') + ' - ' + (j.address || '');
+  document.getElementById('ql-body').innerHTML = '<div class="ql-note">Loading...</div>';
+  document.getElementById('ql-screen').classList.add('open');
+  const [sc, rq, files] = await Promise.all([
+    sb.from('quote_scopes').select('*').eq('job_id', j.id).maybeSingle(),
+    sb.from('quote_requests').select('*').eq('job_id', j.id).order('created_at', { ascending: false }),
+    sb.from('job_files').select('file_url,file_name,mime_type').eq('job_id', j.id).order('uploaded_at', { ascending: true })
+  ]);
+  const base = sc.data ? { location: sc.data.location, title: sc.data.title, scope: sc.data.scope || [] } : qlDefaults(j);
+  const isVid = f => (f.mime_type || '').startsWith('video/') || /\.(mp4|mov|webm)$/i.test(f.file_name || '');
+  QL = { job: j, loc: base.location, title: base.title, scope: JSON.parse(JSON.stringify(base.scope)), saved: !!sc.data, dirty: !sc.data, reqs: rq.data || [], msg: '',
+    media: (files.data || []).filter(f => (f.mime_type || '').startsWith('image/') || isVid(f) || /\.(jpe?g|png|webp)$/i.test(f.file_name || '')).map(f => ({ url: f.file_url, video: isVid(f) })) };
+  qlRender();
+}
+function closeQuoteLinks(){
+  if(QL && QL.dirty && !confirm('You have unsaved changes to this quote. Close without saving?')) return;
+  document.getElementById('ql-screen').classList.remove('open'); QL = null;
+}
+function qlRender(){
+  if(!QL) return;
+  const body = document.getElementById('ql-body'); const keep = body.scrollTop;
+  const items = QL.scope.map((it, i) => `
+    <div class="ql-item">
+      <div class="ql-item-top"><b>${i + 1}</b><input class="ql-in" value="${qlAttr(it.title)}" placeholder="Item heading" oninput="qlSet(${i},'title',this.value)">
+        <button class="ql-sq" onclick="qlMove(${i},-1)">&uarr;</button><button class="ql-sq" onclick="qlMove(${i},1)">&darr;</button><button class="ql-sq" style="color:#dc2626" onclick="qlDelItem(${i})">&times;</button></div>
+      <textarea class="ql-in" rows="3" placeholder="What needs doing" oninput="qlSet(${i},'text',this.value)">${escHtml(it.text)}</textarea>
+      <div class="ql-media">
+        ${(it.photos || []).map((u, k) => `<span class="ql-thumb"><img src="${qlAttr(u)}"><button onclick="qlDelMedia(${i},'photos',${k})">&times;</button></span>`).join('')}
+        ${(it.videos || []).map((u, k) => `<span class="ql-thumb"><video src="${qlAttr(u)}#t=0.5" preload="metadata" muted playsinline></video><span class="ql-tag">Video</span><button onclick="qlDelMedia(${i},'videos',${k})">&times;</button></span>`).join('')}
+      </div>
+      <div class="ql-row"><button class="mini-btn" onclick="qlPickOpen(${i})">+ From job</button><button class="mini-btn" onclick="qlUploadOpen(${i})">+ Upload</button></div>
+    </div>`).join('');
+  const submitted = QL.reqs.filter(r => r.status === 'submitted' && r.price != null);
+  const lowest = submitted.length > 1 ? Math.min.apply(null, submitted.map(r => Number(r.price))) : null;
+  const reqs = QL.reqs.length ? QL.reqs.map(r => {
+    const when = r.submitted_at || r.created_at; let inner = '';
+    const reopened = r.status === 'open' && r.price != null;
+    if(r.status === 'submitted'){
+      inner = `<div style="margin-top:6px;"><span class="ql-price">${qlMoney(r.price)}</span>${lowest !== null && Number(r.price) === lowest ? '<span class="ql-low">Lowest</span>' : ''}</div>
+        ${r.note ? `<div style="font-size:0.86rem;margin-top:2px;">${escHtml(r.note)}</div>` : ''}
+        <div class="ql-row"><button class="ql-btn" onclick="qlView('${r.id}')">View full quote</button><button class="ql-btn teal" onclick="qlUsePrice('${r.id}')">Use as our cost</button><button class="ql-btn light" onclick="qlReopen('${r.id}')">Reopen for more</button></div>`;
+    } else if(r.status === 'open'){
+      inner = `${reopened ? `<div style="font-size:0.84rem;margin-top:6px;">Reopened. Their last quote of <b>${qlMoney(r.price)}</b> is kept and filled in on their page. <button class="mini-btn" onclick="qlView('${r.id}')">View last quote</button></div>` : ''}
+        <div class="ql-row"><button class="ql-btn teal" onclick="qlCopy('${r.token}')">Copy link</button><button class="ql-btn light" onclick="qlSetStatus('${r.id}','closed')">Switch off</button></div>`;
+    } else {
+      inner = `<div class="ql-row"><button class="ql-btn light" onclick="qlSetStatus('${r.id}','open')">Switch back on</button></div>`;
+    }
+    const badge = r.status === 'submitted' ? ['Submitted', '#16a34a'] : r.status === 'open' ? [reopened ? 'Reopened' : 'Waiting', '#d97706'] : ['Switched off', '#6b7280'];
+    return `<div class="ql-req"><div class="ql-req-top"><b>${escHtml(r.technician)}</b><span><span class="ql-badge" style="background:${badge[1]}">${badge[0]}</span> <button class="ql-btn red" onclick="qlDelete('${r.id}')">Delete</button></span></div>
+      <div style="font-size:0.74rem;color:var(--muted);">${r.status === 'submitted' ? 'Submitted ' : 'Created '}${timeAgo(when)}</div>${inner}</div>`;
+  }).join('') : '<div class="ql-note">No links yet. Save the quote above, then type a technician name and tap Create link.</div>';
+  body.innerHTML = `
+    <div class="ql-note">This is what the technician sees. They can only read it and enter prices. Saved changes show on open links straight away.</div>
+    <label class="ql-lbl">Where (postcode or full address, shown as typed)</label>
+    <input class="ql-in" value="${qlAttr(QL.loc)}" placeholder="e.g. BL3 5PH" oninput="QL.loc=this.value;qlDirty()">
+    <label class="ql-lbl">Short title (optional)</label>
+    <input class="ql-in" value="${qlAttr(QL.title)}" placeholder="e.g. Flat repairs and inspection" oninput="QL.title=this.value;qlDirty()">
+    <label class="ql-lbl">Scope of works</label>
+    ${items || '<div class="ql-note">No items yet.</div>'}
+    <div class="ql-row" style="align-items:center;"><button class="mini-btn" onclick="qlAddItem()">+ Add item</button><button class="ql-btn" onclick="qlSave()">Save</button><span id="ql-msg" style="font-size:0.8rem;color:${QL.dirty ? '#d97706' : 'var(--muted)'};">${QL.msg || (QL.dirty ? 'Not saved yet' : 'Saved')}</span></div>
+    <div style="border-top:1px solid var(--border);margin-top:18px;padding-top:12px;">
+      <label class="ql-lbl" style="margin-top:0;">Links and quotes received</label>
+      <div class="ql-row" style="margin:0 0 12px;"><input class="ql-in" id="ql-tech" placeholder="Technician name, e.g. Catalin" style="flex:1;width:auto;"><button class="ql-btn teal" onclick="qlCreate()">Create link</button></div>
+      ${reqs}
+    </div>`;
+  body.scrollTop = keep;
+}
+function qlDirty(){ QL.dirty = true; QL.msg = ''; const m = document.getElementById('ql-msg'); if(m){ m.textContent = 'Not saved yet'; m.style.color = '#d97706'; } }
+function qlSet(i, k, v){ QL.scope[i][k] = v; qlDirty(); }
+function qlAddItem(){ QL.scope.push({ title: '', text: '', photos: [], videos: [] }); QL.dirty = true; QL.msg = ''; qlRender(); }
+function qlDelItem(i){ if(!confirm('Delete this item?')) return; QL.scope.splice(i, 1); QL.dirty = true; QL.msg = ''; qlRender(); }
+function qlMove(i, d){ const k = i + d; if(k < 0 || k >= QL.scope.length) return; const t = QL.scope[i]; QL.scope[i] = QL.scope[k]; QL.scope[k] = t; QL.dirty = true; QL.msg = ''; qlRender(); }
+function qlDelMedia(i, kind, k){ QL.scope[i][kind].splice(k, 1); QL.dirty = true; QL.msg = ''; qlRender(); }
+async function qlSave(){
+  if(!QL) return true;
+  const row = { job_id: QL.job.id, location: (QL.loc || '').trim(), title: (QL.title || '').trim(),
+    scope: QL.scope.filter(x => (x.title || '').trim() || (x.text || '').trim()), updated_at: new Date().toISOString(), updated_by: CURRENT_USER ? CURRENT_USER.name : null };
+  const { error } = await sb.from('quote_scopes').upsert(row, { onConflict: 'job_id' });
+  if(error){ QL.msg = 'Save failed: ' + error.message; qlRender(); return false; }
+  QL.scope = JSON.parse(JSON.stringify(row.scope)); QL.dirty = false; QL.saved = true; QL.msg = 'Saved. Open links now show this.'; qlRender(); return true;
+}
+async function qlCreate(){
+  const inp = document.getElementById('ql-tech'); const name = (inp.value || '').trim();
+  if(!name){ inp.focus(); return; }
+  if(!(QL.loc || '').trim()){ alert('Type the postcode or address first.'); return; }
+  if(!QL.scope.length){ alert('Add at least one scope item first.'); return; }
+  if(QL.dirty || !QL.saved){ if(!(await qlSave())) return; }
+  const tok = qlToken();
+  const { data, error } = await sb.from('quote_requests').insert([{ job_id: QL.job.id, token: tok, technician: name, postcode: QL.loc.trim(), title: QL.title || null, scope: QL.scope }]).select().single();
+  if(error){ alert('Could not create the link: ' + error.message); return; }
+  QL.reqs.unshift(data); QL.msg = ''; qlRender(); qlCopy(tok);
+}
+async function qlCopy(tok){ const ok = await copyText(qlLinkFor(tok)); showToast(ok ? 'Link copied. Paste it to the technician.' : 'Could not copy the link'); }
+async function qlSetStatus(id, status){
+  const { error } = await sb.from('quote_requests').update({ status }).eq('id', id).neq('status', 'submitted');
+  if(error){ alert('Failed: ' + error.message); return; }
+  const r = QL.reqs.find(x => x.id === id); if(r) r.status = status; qlRender();
+}
+async function qlReopen(id){
+  const r = QL.reqs.find(x => x.id === id); if(!r) return;
+  if(!confirm('Reopen the link for ' + r.technician + '? They can open it again, see their last quote filled in, and submit a new one. Until they do, the quote you have now stays here.')) return;
+  const { error } = await sb.from('quote_requests').update({ status: 'open' }).eq('id', id);
+  if(error){ alert('Failed: ' + error.message); return; }
+  r.status = 'open'; qlRender(); qlCopy(r.token);
+}
+async function qlDelete(id){
+  const r = QL.reqs.find(x => x.id === id); if(!r) return;
+  const msg = r.status === 'submitted' ? 'Delete the quote from ' + r.technician + ' (' + qlMoney(r.price) + ')? It is removed from the list for good. The comment on the job stays.' : 'Delete the link for ' + r.technician + '?';
+  if(!confirm(msg)) return;
+  const { error } = await sb.from('quote_requests').delete().eq('id', id);
+  if(error){ alert('Failed: ' + error.message); return; }
+  QL.reqs = QL.reqs.filter(x => x.id !== id); qlRender();
+}
+async function qlUsePrice(id){
+  const r = QL.reqs.find(x => x.id === id); if(!r) return;
+  if(!confirm('Set our cost on this job to ' + qlMoney(r.price) + '?')) return;
+  const { error } = await sb.from('jobs').update({ cost_to_us: Number(r.price) }).eq('id', QL.job.id);
+  if(error){ alert('Failed: ' + error.message); return; }
+  const j = JOBS.find(x => x.id === QL.job.id); if(j) j.cost_to_us = Number(r.price);
+  showToast('Our cost is now ' + qlMoney(r.price));
+}
+/* photos and videos: pick from the job, or upload new (kept out of the job's own file list) */
+function qlPickOpen(i){
+  if(!QL.media.length){ alert('This job has no photos or videos yet. Use Upload instead.'); return; }
+  QL_PICK_ITEM = i; QL_PICK = new Set();
+  document.getElementById('ql-pick-grid').innerHTML = QL.media.map((m, k) => `<button type="button" class="ql-pick" id="qlp${k}" onclick="qlPickToggle(${k})">${m.video ? `<video src="${qlAttr(m.url)}#t=0.5" preload="metadata" muted playsinline></video><span class="ql-tag">Video</span>` : `<img src="${qlAttr(m.url)}">`}</button>`).join('');
+  document.getElementById('ql-pick-screen').classList.add('open');
+}
+function qlPickToggle(k){ const b = document.getElementById('qlp' + k); if(QL_PICK.has(k)){ QL_PICK.delete(k); b.classList.remove('on'); } else { QL_PICK.add(k); b.classList.add('on'); } }
+function qlClosePick(){ document.getElementById('ql-pick-screen').classList.remove('open'); }
+function qlPickDone(){
+  const it = QL.scope[QL_PICK_ITEM]; it.photos = it.photos || []; it.videos = it.videos || [];
+  Array.from(QL_PICK).sort((a, b) => a - b).forEach(k => { const m = QL.media[k]; const arr = m.video ? it.videos : it.photos; if(arr.indexOf(m.url) < 0) arr.push(m.url); });
+  QL.dirty = true; QL.msg = ''; qlClosePick(); qlRender();
+}
+function qlUploadOpen(i){ QL_UPLOAD_ITEM = i; const inp = document.getElementById('ql-upload-input'); inp.value = ''; inp.click(); }
+async function qlUploadPicked(inp){
+  const files = Array.from(inp.files || []); inp.value = '';
+  if(!files.length || QL_UPLOAD_ITEM < 0) return;
+  const it = QL.scope[QL_UPLOAD_ITEM]; const m = document.getElementById('ql-msg');
+  for(let n = 0; n < files.length; n++){
+    const f = files[n]; if(m){ m.style.color = 'var(--muted)'; m.textContent = 'Uploading ' + (n + 1) + ' of ' + files.length + '...'; }
+    const path = `quote/${QL.job.id}/${Date.now()}_${n}_${(f.name || 'file').replace(/[^\w.\-]+/g, '_')}`;
+    const { error } = await sb.storage.from('job-files').upload(path, f);
+    if(error){ if(m){ m.style.color = '#dc2626'; m.textContent = 'Upload failed: ' + error.message; } continue; }
+    const pub = sb.storage.from('job-files').getPublicUrl(path).data.publicUrl;
+    if(/^video\//.test(f.type || '') || /\.(mp4|mov|webm)$/i.test(f.name || '')){ it.videos = it.videos || []; it.videos.push(pub); } else { it.photos = it.photos || []; it.photos.push(pub); }
+  }
+  QL.dirty = true; QL.msg = ''; qlRender();
+}
+/* read-only full view of a received quote */
+function qlViewClose(){ document.getElementById('ql-view-screen').classList.remove('open'); }
+function qlView(id){
+  if(!QL) return;
+  const r = QL.reqs.find(x => x.id === id); if(!r) return;
+  const ip = Array.isArray(r.item_prices) ? r.item_prices : []; const sc = Array.isArray(r.scope) ? r.scope : [];
+  const when = r.submitted_at ? new Date(r.submitted_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+  document.getElementById('ql-view-sub').textContent = (QL.job.ref || '') + ' - ' + (r.responder_name || r.technician);
+  const rows = sc.map((it, n) => {
+    const p = ip[n] || {};
+    const ph = (it.photos || []).map(u => `<span class="ql-thumb" onclick="openViewer('${qlAttr(u)}','','image/jpeg')"><img src="${qlAttr(u)}"></span>`).join('');
+    const vd = (it.videos || []).map(u => `<span class="ql-thumb" onclick="openViewer('${qlAttr(u)}','video.mp4','video/mp4')"><video src="${qlAttr(u)}#t=0.5" preload="metadata" muted playsinline></video><span class="ql-tag">Video</span></span>`).join('');
+    return `<div class="ql-vcard"><div style="font-weight:800;">${n + 1}. ${escHtml(it.title || '')}</div>
+      ${it.text ? `<div style="font-size:0.88rem;margin-top:4px;color:var(--muted);">${escHtml(it.text)}</div>` : ''}
+      ${(ph || vd) ? `<div class="ql-media">${ph}${vd}</div>` : ''}
+      <label class="ql-lbl">Their price</label><div class="ql-vprice ${p.price != null ? '' : 'none'}">${p.price != null ? qlMoney(p.price) : 'not priced'}</div>
+      <label class="ql-lbl">What they will do</label><div class="ql-vplan ${p.plan ? '' : 'none'}">${p.plan ? escHtml(p.plan) : 'Nothing written'}</div></div>`;
+  }).join('');
+  document.getElementById('ql-view-body').innerHTML = `
+    <div class="ql-vcard"><div style="font-size:0.72rem;font-weight:800;text-transform:uppercase;color:var(--muted);">Total quoted</div><div class="ql-price" style="font-size:2rem;">${qlMoney(r.price)}</div>
+      <div style="font-size:0.8rem;color:var(--muted);">${escHtml(r.postcode || '')}${when ? ' - submitted ' + when : ''}</div>
+      ${r.note ? `<label class="ql-lbl">Their notes</label><div style="font-size:0.92rem;">${escHtml(r.note)}</div>` : ''}
+      <div class="ql-row"><button class="ql-btn teal" onclick="qlUsePrice('${r.id}')">Use as our cost</button></div></div>
+    ${rows || '<div class="ql-note">No scope items.</div>'}`;
+  document.getElementById('ql-view-screen').classList.add('open');
+}
