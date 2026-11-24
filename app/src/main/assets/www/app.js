@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '37';
+const UI_VER = '38';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -783,7 +783,7 @@ views.block = async function (alive) {
   const sw = (id, m) => '<div class="segc" id="' + id + '"><button data-m="off" class="' + (m === 'off' ? 'on' : '') + '">Off</button><button data-m="block" class="' + (m === 'block' ? 'on' : '') + '">Blocklist</button><button data-m="allow" class="' + (m === 'allow' ? 'on' : '') + '">Allowlist</button></div>';
   const rows = (list, kind) => list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + PV(nicks[x.mac] || x.mac) + '</div><div class="sm">' + PV(x.mac) + (timers[x.mac] ? ' · ' + left(timers[x.mac]) : '') + '</div></div><button class="b soft sm2" data-k="' + kind + '" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Nothing blocked</div>';
   $('#view').innerHTML =
-    '<div class="card pad"><h2>Check blocking</h2><div class="sm">Checks that the filter is really on, switches it on if it isn\'t, and shows whether any blocked device is still on Wi-Fi.</div><div style="margin-top:12px"><button class="b full" id="chk2">Check and fix blocking</button></div><div id="chkout" style="margin-top:12px" hidden></div></div>' +
+    '<div class="card pad"><h2>Check blocking</h2><div class="sm">Checks that the filter is really on, switches it on if it isn\'t, and shows whether any blocked device is still on Wi-Fi.</div><div style="margin-top:12px"><button class="b full" id="chk2">Check and fix blocking</button></div><div style="margin-top:8px"><button class="b soft full" id="force">Force block (tries every fix)</button></div><div id="chkout" style="margin-top:12px" hidden></div></div>' +
     '<div class="card pad"><h2>Wi-Fi filter</h2>' + sw('wsw', modeOf(wst)) +
     '<div class="sm" style="margin-top:12px">This is the one that blocks phones and laptops on Wi-Fi. Blocklist: listed devices are cut off. Allowlist: only listed devices get in, so be careful.</div></div>' +
     '<div class="sec">Blocked on Wi-Fi</div><div class="card">' + rows(wl.list, 'w') + '</div>' +
@@ -846,6 +846,42 @@ views.block = async function (alive) {
     } catch (e) { say(esc(e.message), 'err'); }
     b.disabled = false;
   };
+  $('#force').onclick = async () => {
+    const b = $('#force'), o = $('#chkout');
+    if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Tap again. Wi-Fi restarts once and takes about a minute'; return; }
+    b.disabled = true; o.hidden = false; const L = [];
+    const log = (t) => { L.push(t); o.innerHTML = '<pre class="pv" style="max-height:none">' + esc(L.join('\n')) + '</pre>'; };
+    try {
+      log('UI ' + UI_VER + ' · ' + new Date().toString());
+      let w = await loadWBlocked();
+      log('Wi-Fi filter: ' + stateText(w.st) + ', ' + w.list.length + ' entries');
+      (w.body || '').split(/\r?\n/).forEach((l) => { if (/WIFIName|SSIDnum|stWlanMacFilter\(|enableFilter\s*=|Mode\s*=|length\s*>=|MaxNum|max/i.test(l) && !/function|\.css/.test(l)) log('  page: ' + l.trim().slice(0, 200)); });
+      const macs = Array.from(new Set(w.list.map((x) => x.mac)));
+      const on0 = await assocMacs(); const leaks = macs.filter((m) => on0.includes(m));
+      log('On Wi-Fi now: ' + on0.length + ' · blocked and online: ' + (leaks.join(', ') || 'none'));
+      if (!leaks.length) log('Nothing to fix: no blocked device is online right now.');
+      else {
+        for (const m of leaks) {
+          for (const e of w.list.filter((x) => x.mac === m)) { log('  removing entry: ' + e.f.join(' | ').slice(0, 160)); await wRemove(e.domain); await sleep(700); }
+          let r = await wAdd(m); if (!r.ok) { await sleep(1000); r = await wAdd(m); }
+          log('Re-added ' + m + ': ' + (r.ok ? 'ok (SSID form ' + r.form + ')' : 'FAILED, the router did not take it'));
+        }
+        let st = await setWFilter('off'); log('Filter off: ' + stateText(st));
+        st = await setWFilter('block'); log('Filter blocklist: ' + stateText(st));
+        for (const m of leaks) { try { const r = await blockDevice(m, false); log('Cable filter ' + m + ': ' + (r.ok ? 'added' : 'not added') + ', filter ' + (r.on ? 'on' : 'off')); } catch (e) { log('Cable filter error: ' + e.message); } }
+        const r = await api('GET', '/html/amp/wlanbasic/WlanBasic.asp', BRH); const ob = parseObjs(r.body);
+        const ww = ob.find((x) => x.type === 'stWlan' && /WLANConfiguration\.1$/.test(x.f[0] || '')); const kk = ob.find((x) => x.type === 'stPreSharedKey' && /WLANConfiguration\.1\./.test(x.f[0] || ''));
+        if (!ww || !ww.f[3] || !kk || !kk.f[1]) log('Wi-Fi restart skipped: could not read the Wi-Fi name and password');
+        else { await writeWifi(ww.f[3], kk.f[1]); log('Wi-Fi restarted. Waiting 25 s…'); await sleep(25000); }
+        const on1 = await assocMacs(); const still = leaks.filter((m) => on1.includes(m));
+        log(still.length ? 'STILL ONLINE after everything: ' + still.join(', ') : 'DONE: the blocked devices are off Wi-Fi.');
+        const w2 = await loadWBlocked(); log('Filter now: ' + stateText(w2.st) + ', ' + w2.list.length + ' entries');
+        w2.list.forEach((e) => log('  entry: ' + e.f.join(' | ').slice(0, 200)));
+      }
+    } catch (e) { log('Error: ' + e.message); }
+    try { if (window.ONT && ONT.copy) ONT.copy(L.join('\n')); toast('Result copied. Paste it to me.', 5000); } catch (e) {}
+    b.hidden = true;
+  };
   swHandler('wsw', true); swHandler('lsw', false);
   $('#add').onclick = async () => {
     const mac = $('#mac').value.trim();
@@ -886,6 +922,7 @@ views.tools = async function () {
     '<div style="margin-top:16px"><button class="b full" id="save">Save</button></div></div></div>' +
     '<div id="dgwrap" hidden><div style="margin:8px 0 0"><button class="b ghost" id="dback" style="padding-left:0">‹ Back</button></div><div class="sm" style="margin:0 6px 4px">Bug-testing tools for sending me results. Most only read. The two filter diagnose tools briefly add a test entry to the router\'s filter and remove it.</div>' +
     '<div class="sec">Wi-Fi settings dump</div><div class="card pad"><div class="sm">Read-only. Reads every Wi-Fi, LAN and DHCP setting page in full (passwords hidden) so I can compare them with the earlier capture. Takes under a minute. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="wdump">Dump Wi-Fi settings</button></div><div class="sm" id="wdst" style="margin-top:8px"></div><pre class="pv" id="wdout" hidden></pre><button class="b ghost sm2" id="wdcp" hidden>Copy result</button></div>' +
+    '<div class="sec">IP filter details</div><div class="card pad"><div class="sm">Read-only. Reads how the router\'s IP filter (firewall) page adds a rule, so I can build a block that cuts a device off even while it is connected. The result is copied for you. Paste it to me.</div><div style="margin-top:12px"><button class="b soft full" id="ipcol">Collect IP filter details</button></div><pre class="pv" id="ipout" hidden></pre></div>' +
     '<div class="sec">Wi-Fi air report</div><div class="card pad"><div class="sm">Read-only. Reads which devices are on Wi-Fi with their signal and speed, and which other Wi-Fi networks are nearby on which channel. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="aircol">Collect Wi-Fi air report</button></div><pre class="pv" id="airout" hidden></pre><button class="b ghost sm2" id="aircp" hidden>Copy result</button></div>' +
     '<div class="sec">Add more features</div><div class="card pad"><div class="sm">Opens the router\'s original pages in here and records what each button sends, so I can build it. Passwords are hidden in the log.</div>' +
     '<div style="margin-top:14px"><button class="b soft full" id="cap">' + (canCapture ? 'Record from the old portal' : 'Needs the latest app install') + '</button></div>' +
@@ -936,6 +973,19 @@ views.tools = async function () {
       out.textContent = rep;
     }
     b.disabled = false; const cp = $('#aircp'); cp.hidden = false; cp.onclick = () => copyText(rep);
+  };
+  $('#ipcol').onclick = async () => {
+    const b = $('#ipcol'), out = $('#ipout'); b.disabled = true; out.hidden = false; out.textContent = 'Reading…'; let rep = 'UI ' + UI_VER + '\n';
+    for (const p of ['/html/bbsp/ipincoming/ipincoming.asp', '/html/bbsp/ipoutgoing/ipoutgoing.asp', '/html/bbsp/wlanmacfilter/wlanmacfilter.asp']) {
+      try {
+        const r = await api('GET', p, BRH); const L = (r.body || '').split(/\r?\n/); const keep = [];
+        L.forEach((l, i) => { if (/addParameter|setAction|add\.cgi|set\.cgi|del\.cgi|<option|<select|Action|Policy|Direction|Priority|ipFilterIn|length\s*>=|stFilterIn\(|new\s+stSpecPara|x\.|X_HW_Security/.test(l) && !/appTemps|language\[|\.css|stTableTileInfo/.test(l)) keep.push((i + 1) + ': ' + l.trim().slice(0, 300)); });
+        rep += '## ' + p + ' [' + r.status + ', ' + (r.body || '').length + ' bytes]\n' + keep.slice(0, 140).join('\n') + '\n\n';
+      } catch (e) { rep += '## ' + p + ' error: ' + e.message + '\n\n'; }
+      out.textContent = rep;
+    }
+    try { if (window.ONT && ONT.copy) ONT.copy(rep); toast('Copied. Paste it to me.', 5000); } catch (e) {}
+    b.disabled = false;
   };
   const showDiag = (on) => { $('#dgwrap').hidden = !on; $('#mm1').hidden = on; $('#mm2').hidden = on; $('#view').scrollTop = 0; };
   $('#dopen').onclick = () => showDiag(true); $('#dback').onclick = () => showDiag(false);
