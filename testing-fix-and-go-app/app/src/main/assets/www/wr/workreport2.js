@@ -38,7 +38,7 @@
     let title = '', sections = [], cur = null;
     const FIND_RE = /^(additional\s+)?(findings?|observations?|recommendations?|change of scope|additional (notes?|items?|works?))\s*(\([^)]*\))?\s*:?$/i;
     blocks.forEach(b => {
-      if(b.k === 'h'){ title = titleCase(b.t.replace(/^work report\s*[-:]?\s*/i, '')); return; }
+      if(b.k === 'h'){ title = titleCase(b.t.replace(/^work\s+(completion\s+)?report\s*[-–—:]*\s*/i, '')); return; }
       if(b.k === 's' || (b.k === 'b' && FIND_RE.test(b.t.trim()))){ cur = { name: b.t.replace(/\s*:$/, ''), items: [] }; sections.push(cur); return; }
       if(!cur){ cur = { name: '', items: [] }; sections.push(cur); }
       cur.items.push(b.t);

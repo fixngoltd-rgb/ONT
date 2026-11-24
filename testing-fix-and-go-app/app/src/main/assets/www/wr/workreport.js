@@ -31,20 +31,60 @@
     return assetsP;
   }
 
-  /* ---------- text ---------- */
-  const SECTION_RE = /^(issues reported|work carried out|outcome|findings|recommendations|change of scope)\s*(\([^)]*\))?\s*:?$/i;   // main headings, with or without a bracket note or colon
+  /* ---------- text ----------
+     Reads ANY reasonable layout, whoever typed it: bullets or none, "-", "•", "✓", "1.", en/em dashes, headings with or without a colon,
+     wrong case, "Issue Reported" / "Works Carried Out" style variants, headings with the text on the same line, long intro lines ending in ":". */
+  const HEAD_MAP = [
+    [/^(issues?|problems?|faults?|defects?)(\s+(reported|found|identified|raised|noted))?$|^(reported|reason for)\s+(issues?|problems?|faults?|visit|call\s*out)$|^reason for (the )?(visit|call\s*out)$|^background$/i, 'Issues Reported'],
+    [/^works?\s+(carried\s+out|completed|done|undertaken|performed|attended|carried)$|^work\s+(carried\s+out|completed|done|undertaken|performed)$|^(actions?|action\s+taken|works?)\s*(taken|carried out)?$|^what\s+(we|was)\s+did$|^repairs?\s+(carried\s+out|completed)$/i, 'Work Carried Out'],
+    [/^(outcome|result|results|conclusion|summary|status|final\s+outcome|completion)$/i, 'Outcome'],
+    [/^(additional\s+)?(findings?|observations?)$/i, 'Findings'],
+    [/^(recommendations?|advice|next\s+steps)$/i, 'Recommendations'],
+    [/^change\s+of\s+scope$/i, 'Change of Scope'],
+    [/^additional\s+(notes?|items?|works?)$/i, null]
+  ];
+  const SECTION_RE = /^(issues reported|work carried out|outcome|findings|recommendations|change of scope)\s*(\([^)]*\))?\s*:?$/i;
+  function headName(t){
+    const s = t.replace(/[\s:.\-–—]+$/, '').replace(/^[\s:.\-–—]+/, '').replace(/\s*\([^)]*\)\s*$/, '').trim();
+    if(!s || s.length > 40) return null;
+    for(const [re, name] of HEAD_MAP) if(re.test(s)) return name === null ? s.replace(/\b\w/g, c => c.toUpperCase()) : name;
+    return null;
+  }
   function parseText(raw){
     const out = [];
+    const BUL = /^(?:[•·●▪■◦○✓✔✅☑*–—-]+|\d{1,2}[.)]|[a-z][.)])\s+/;      // "- ", "• ", "✓ ", "1. ", "2) ", "a) "
     String(raw || '').replace(/\r/g, '').split('\n').forEach(l0 => {
-      let l = l0.trim();
+      let l = l0.replace(/[ ​]/g, ' ').trim();
       if(!l) return;
       if(/\[\d+ attachments?:/i.test(l)) l = l.replace(/\s*\[\d+ attachments?:[^\]]*\]\s*$/i, '').trim();
       if(!l) return;
       if(/ref:\s*job-\d+/i.test(l) || /ref:\s*quo-\d+/i.test(l)) return;   // address/ref line is not part of the report body
-      if(!out.length && /^work report/i.test(l)){ out.push({ k: 'h', t: l }); return; }
-      // any un-bulleted line that is a main heading or ends with a colon (e.g. 'Visit 1 - Initial inspection:') is a heading, not a bullet
-      if(SECTION_RE.test(l) || (!/^[•\-\*–]/.test(l) && /:$/.test(l))){ out.push({ k: 's', t: l.replace(/\s*:$/, '') }); return; }
-      out.push({ k: 'b', t: l.replace(/^[•\-\*–]\s*/, '') });
+      l = l.replace(/^\*\*(.+)\*\*$/, '$1').replace(/^#+\s*/, '').trim();       // markdown bold / hash headings
+      if(!out.length && /^[-–—•*\s]*work\s+(completion\s+)?report\b/i.test(l)){
+        out.push({ k: 'h', t: l.replace(/^[-–—•*\s]*/, '').replace(/\s*[–—]\s*/, ' - ') }); return;
+      }
+      const bulleted = BUL.test(l) && !/^\d+[.)]?\s*$/.test(l);
+      const body = bulleted ? l.replace(BUL, '').trim() : l;
+      if(!body) return;
+      // known heading, alone ("Outcome", "Outcome:", "- Outcome", "OUTCOME (final)") or with its text on the same line ("Outcome: all done")
+      const hn = headName(body);
+      if(hn && (!bulleted || /^[-–—•*]+\s/.test(l) )){ out.push({ k: 's', t: hn }); return; }
+      const m = body.match(/^([A-Za-z ]{4,32}?)\s*:\s+(\S.*)$/);
+      if(m && !bulleted){
+        const h2 = headName(m[1]);
+        if(h2){ out.push({ k: 's', t: h2 }); out.push({ k: 'b', t: m[2].trim() }); return; }
+      }
+      // short un-bulleted line ending in ":" is a custom heading (e.g. "Visit 1 - Initial inspection:")
+      if(!bulleted && /:$/.test(body)){
+        const words = body.replace(/:$/, '').trim().split(/\s+/).length;
+        if(words <= 8 && body.length <= 60 && !/\b(following|below|as follows|including)\b/i.test(body)){
+          out.push({ k: 's', t: body.replace(/\s*:$/, '') }); return;
+        }
+        // long lead-in such as "Our engineer attended and completed the following work:" is just filler, not a heading and not a bullet
+        if(/\b(following|below|as follows)\b[^.]*:$/i.test(body)) return;
+        out.push({ k: 'b', t: body.replace(/\s*:$/, '') }); return;
+      }
+      out.push({ k: 'b', t: body });
     });
     return out;
   }
