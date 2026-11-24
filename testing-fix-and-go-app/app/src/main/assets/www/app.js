@@ -2031,12 +2031,39 @@ const qlAttr = s => escHtml(s).replace(/"/g, '&quot;');
 function qlToken(){ const b = new Uint8Array(16); crypto.getRandomValues(b); return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
 function qlLinkFor(tok){ return QL_PAGE + '?t=' + tok; }
 function qlMoney(n){ return '£' + (Math.round(Number(n) * 100) / 100).toFixed(2).replace(/\.00$/, ''); }
+function qlTitleOf(t){
+  let s = String(t || '').trim();
+  const c = s.search(/:|\s-\s|–/);
+  if(c > 8 && c < 60) s = s.slice(0, c).trim();
+  if(s.length > 60){ s = s.slice(0, 60).replace(/\s+\S*$/, '') + '…'; }
+  return s;
+}
+function qlParseScope(desc){
+  desc = String(desc || '');
+  const clean = x => x.replace(/^\s*(?:[-•*·]|\d+[.)])\s*/, '').replace(/^QUOTE[^:]{0,30}:\s*/i, '').trim();
+  const isHead = x => /^[^-•*·\d][^]*:\s*$/.test(x.trim()) && x.trim().length < 70;
+  let body = null;
+  const m = desc.match(/WORK REQUIRED:?\s*([\s\S]*?)(?:\n\s*NOTES?\s*:|\n\s*LINKED TO\s*:|\n\s*REQUESTED BY\s*:|\n\s*UPDATE[^\n]*:|$)/i);
+  if(m) body = m[1];
+  else body = desc.split('\n').filter(l => !/^\s*(REQUESTED BY|LINKED TO|NOTES?)\b/i.test(l)).join('\n');
+  const items = [];
+  body.split('\n').forEach(l => {
+    if(!l.trim() || isHead(l)) return;
+    const t = clean(l);
+    if(t) items.push({ title: qlTitleOf(t), text: t, photos: [], videos: [] });
+  });
+  return items.slice(0, 40);
+}
 function qlDefaults(j){
   const pc = (j.address || '').match(/[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}/i);
-  const m = (j.description || '').match(/WORK REQUIRED:\s*([\s\S]*?)(?:\n\s*\n|\nNOTES:|$)/i);
-  const items = [];
-  if(m) m[1].split('\n').map(x => x.replace(/^\s*-\s*/, '').replace(/^QUOTE:\s*/i, '').trim()).filter(Boolean).forEach(t => items.push({ title: t.split(/\s+/).slice(0, 5).join(' '), text: t, photos: [], videos: [] }));
-  return { location: pc ? pc[0].toUpperCase() : (j.address || ''), title: (j.title || '').replace(/^Quotation Needed\s*-\s*/i, ''), scope: items };
+  return { location: pc ? pc[0].toUpperCase() : (j.address || ''), title: (j.title || '').replace(/^Quotation Needed\s*-\s*/i, ''), scope: qlParseScope(j.description) };
+}
+async function qlReload(){
+  if(!QL) return;
+  if(!confirm('Replace the items below with the scope from the job description? Photos added to items here will be removed.')) return;
+  const f = await sb.from('jobs').select('ref,title,address,description').eq('id', QL.job.id).maybeSingle();
+  const d = qlDefaults(Object.assign({}, QL.job, f.data || {}));
+  QL.loc = d.location; QL.title = d.title; QL.scope = d.scope; QL.dirty = true; QL.msg = ''; qlRender();
 }
 async function openQuoteLinks(){
   if(!isAdminUser() || !currentDetailId) return;
@@ -2044,12 +2071,13 @@ async function openQuoteLinks(){
   document.getElementById('ql-addr').textContent = (j.ref || '') + ' - ' + (j.address || '');
   document.getElementById('ql-body').innerHTML = '<div class="ql-note">Loading...</div>';
   document.getElementById('ql-screen').classList.add('open');
-  const [sc, rq, files] = await Promise.all([
+  const [sc, fresh, rq, files] = await Promise.all([
     sb.from('quote_scopes').select('*').eq('job_id', j.id).maybeSingle(),
+    sb.from('jobs').select('ref,title,address,description').eq('id', j.id).maybeSingle(),
     sb.from('quote_requests').select('*').eq('job_id', j.id).order('created_at', { ascending: false }),
     sb.from('job_files').select('file_url,file_name,mime_type').eq('job_id', j.id).order('uploaded_at', { ascending: true })
   ]);
-  const base = sc.data ? { location: sc.data.location, title: sc.data.title, scope: sc.data.scope || [] } : qlDefaults(j);
+  const base = sc.data ? { location: sc.data.location, title: sc.data.title, scope: sc.data.scope || [] } : qlDefaults(Object.assign({}, j, fresh.data || {}));
   const isVid = f => (f.mime_type || '').startsWith('video/') || /\.(mp4|mov|webm)$/i.test(f.file_name || '');
   QL = { job: j, loc: base.location, title: base.title, scope: JSON.parse(JSON.stringify(base.scope)), saved: !!sc.data, dirty: !sc.data, reqs: rq.data || [], msg: '',
     media: (files.data || []).filter(f => (f.mime_type || '').startsWith('image/') || isVid(f) || /\.(jpe?g|png|webp)$/i.test(f.file_name || '')).map(f => ({ url: f.file_url, video: isVid(f) })) };
@@ -2100,7 +2128,7 @@ function qlRender(){
     <input class="ql-in" value="${qlAttr(QL.title)}" placeholder="e.g. Flat repairs and inspection" oninput="QL.title=this.value;qlDirty()">
     <label class="ql-lbl">Scope of works</label>
     ${items || '<div class="ql-note">No items yet.</div>'}
-    <div class="ql-row" style="align-items:center;"><button class="mini-btn" onclick="qlAddItem()">+ Add item</button><button class="ql-btn" onclick="qlSave()">Save</button><span id="ql-msg" style="font-size:0.8rem;color:${QL.dirty ? '#d97706' : 'var(--muted)'};">${QL.msg || (QL.dirty ? 'Not saved yet' : 'Saved')}</span></div>
+    <div class="ql-row" style="align-items:center;"><button class="mini-btn" onclick="qlAddItem()">+ Add item</button><button class="mini-btn" onclick="qlReload()">Reload from job</button><button class="ql-btn" onclick="qlSave()">Save</button><span id="ql-msg" style="font-size:0.8rem;color:${QL.dirty ? '#d97706' : 'var(--muted)'};">${QL.msg || (QL.dirty ? 'Not saved yet' : 'Saved')}</span></div>
     <div style="border-top:1px solid var(--border);margin-top:18px;padding-top:12px;">
       <label class="ql-lbl" style="margin-top:0;">Links and quotes received</label>
       <div class="ql-row" style="margin:0 0 12px;"><input class="ql-in" id="ql-tech" placeholder="Technician name, e.g. Catalin" style="flex:1;width:auto;"><button class="ql-btn teal" onclick="qlCreate()">Create link</button></div>
