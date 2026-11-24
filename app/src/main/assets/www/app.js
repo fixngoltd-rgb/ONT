@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '38';
+const UI_VER = '39';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -560,6 +560,50 @@ async function blockDevice(mac, wireless) {
   const ok = (await loadBlocked()).some((x) => x.mac === mac.toLowerCase());
   return { ok, on: filterState((await api('GET', MF + 'macfilter.asp')).body).on };
 }
+
+/* ---- Internet cut-off by IP (router firewall, page ipincoming). Second method: works even when the Wi-Fi filter is ignored. */
+const IPF = '/html/bbsp/ipincoming/';
+const IPFR = 'RequestFile=html/bbsp/ipincoming/ipincoming.asp';
+async function ipLoad() {
+  const r = await api('GET', IPF + 'ipincoming.asp');
+  const ob = parseObjs(r.body || '');
+  const pf = ob.find((o) => o.type === 'stPortFilter');
+  const rules = ob.filter((o) => o.type === 'stFilterIn' && /IpFilterIn\.\d+$/.test(o.f[0] || '')).map((o) => ({ domain: o.f[0], prio: o.f[1], proto: o.f[2], dir: o.f[3], src: o.f[4], src2: o.f[5], action: o.f[8], f: o.f }));
+  return { on: !!pf && pf.f[1] === '1', policy: pf ? pf.f[2] : '?', ok: !!pf, rules };
+}
+async function netOk() {
+  try { const c = new AbortController(); const t = setTimeout(() => c.abort(), 6000); await fetch('https://www.gstatic.com/generate_204?' + Date.now(), { mode: 'no-cors', cache: 'no-store', signal: c.signal }); clearTimeout(t); return true; } catch (e) { return false; }
+}
+const ipFirewall = (on) => postForm('/html/bbsp/ipincoming/set.cgi?x=InternetGatewayDevice.X_HW_Security&' + IPFR, { 'x.IpFilterInRight': on ? '1' : '0' });
+const ipRemove = (domain) => postForm(IPF + 'del.cgi?x=InternetGatewayDevice.X_HW_Security.IpFilterIn&' + IPFR, { [domain]: '' });
+// Adds one Drop rule for a device's IP (LAN to internet). Turns the firewall on only if needed, checks the phone still has internet, and undoes everything if not.
+async function ipCut(ip, log) {
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) throw new Error('No IP address known for that device');
+  const st0 = await ipLoad();
+  if (!st0.ok) throw new Error('Could not read the router IP filter page, nothing changed');
+  if (st0.rules.length >= 32) throw new Error('The router IP filter list is full (32)');
+  if (st0.rules.some((x) => x.src === ip && x.src2 === ip && /drop/i.test(x.action))) { log('Rule for ' + ip + ' already exists'); return { ok: true, existed: true }; }
+  const base = await netOk(); log('This phone has internet before: ' + (base ? 'yes' : 'no'));
+  const used = st0.rules.filter((x) => /up/i.test(x.dir)).map((x) => +x.prio); let pr = 1; while (used.includes(pr)) pr++;
+  log('Adding Drop rule for ' + ip + ' (priority ' + pr + ', firewall was ' + (st0.on ? 'on' : 'off') + ', mode ' + st0.policy + ')');
+  await postForm(IPF + 'add.cgi?x=InternetGatewayDevice.X_HW_Security.IpFilterIn&' + IPFR, { 'x.Protocol': 'ALL', 'x.Direction': 'Upstream', 'x.Name': '', 'x.Priority': String(pr), 'x.Action': 'Drop', 'x.SourceIPStart': ip, 'x.SourceIPEnd': ip, 'x.DestIPStart': '', 'x.DestIPEnd': '', 'x.LanSideTcpPort': '', 'x.LanSideUdpPort': '', 'x.WanSideTcpPort': '', 'x.WanSideUdpPort': '' });
+  await sleep(1500);
+  let st = await ipLoad(); const mine = st.rules.find((x) => x.src === ip && !st0.rules.some((y) => y.domain === x.domain));
+  if (!mine) { log('The router did not take the rule. Reply: ' + (lastWrite ? lastWrite.reply : '')); return { ok: false }; }
+  log('Rule saved: ' + mine.f.join(' | ').slice(0, 200));
+  if (!st.on) { await ipFirewall(true); await sleep(2500); st = await ipLoad(); log('Firewall now ' + (st.on ? 'on' : 'still off')); }
+  if (base) {
+    const after = await netOk();
+    if (!after) {
+      log('This phone LOST internet after the change. Undoing…');
+      await ipFirewall(st0.on); await sleep(1500); await ipRemove(mine.domain); await sleep(1500);
+      const back = await netOk(); log('Undone. Phone internet: ' + (back ? 'back' : 'not back yet, wait 30 s'));
+      return { ok: false, undone: true };
+    }
+    log('This phone still has internet. Good.');
+  }
+  return { ok: st.on, rule: mine };
+}
 const isWireless = (d) => /wireless|wifi|wi-fi|wlan|ssid/i.test([d.portType, d.port].join(' '));
 
 /* ---- DHCP reservations (request names read from the router's own dhcpstatic page) */
@@ -784,6 +828,7 @@ views.block = async function (alive) {
   const rows = (list, kind) => list.length ? list.map((x, i) => '<div class="row"><div class="grow"><div class="name">' + PV(nicks[x.mac] || x.mac) + '</div><div class="sm">' + PV(x.mac) + (timers[x.mac] ? ' · ' + left(timers[x.mac]) : '') + '</div></div><button class="b soft sm2" data-k="' + kind + '" data-u="' + i + '">Remove</button></div>').join('') : '<div class="empty">Nothing blocked</div>';
   $('#view').innerHTML =
     '<div class="card pad"><h2>Check blocking</h2><div class="sm">Checks that the filter is really on, switches it on if it isn\'t, and shows whether any blocked device is still on Wi-Fi.</div><div style="margin-top:12px"><button class="b full" id="chk2">Check and fix blocking</button></div><div style="margin-top:8px"><button class="b soft full" id="force">Force block (tries every fix)</button></div><div id="chkout" style="margin-top:12px" hidden></div></div>' +
+    '<div class="card pad"><h2>Cut internet by IP</h2><div class="sm">Second method. Uses the router firewall, so it works even when the Wi-Fi filter is ignored. The device stays connected but gets no internet. If your own phone loses internet because of it, the app undoes it by itself.</div><div style="margin-top:12px"><button class="b full" id="ipcut">Cut internet for blocked devices</button></div><div id="ipout" style="margin-top:12px" hidden></div><div id="iprules"></div></div>' +
     '<div class="card pad"><h2>Wi-Fi filter</h2>' + sw('wsw', modeOf(wst)) +
     '<div class="sm" style="margin-top:12px">This is the one that blocks phones and laptops on Wi-Fi. Blocklist: listed devices are cut off. Allowlist: only listed devices get in, so be careful.</div></div>' +
     '<div class="sec">Blocked on Wi-Fi</div><div class="card">' + rows(wl.list, 'w') + '</div>' +
@@ -881,6 +926,32 @@ views.block = async function (alive) {
     } catch (e) { log('Error: ' + e.message); }
     try { if (window.ONT && ONT.copy) ONT.copy(L.join('\n')); toast('Result copied. Paste it to me.', 5000); } catch (e) {}
     b.hidden = true;
+  };
+  const ipDraw = async () => {
+    try {
+      const st = await ipLoad(); const h = $('#iprules'); if (!h) return;
+      h.innerHTML = '<div class="sm" style="margin-top:12px">Firewall: ' + (st.on ? 'on' : 'off') + ' · ' + st.rules.length + ' rule(s)</div>' + st.rules.map((x, i) => '<div class="row"><div class="grow"><div class="name pv">' + esc(x.src + (x.src2 && x.src2 !== x.src ? ' – ' + x.src2 : '')) + '</div><div class="sm">' + esc(x.dir + ' · ' + x.action) + '</div></div><button class="b soft sm2" data-ir="' + i + '">Restore</button></div>').join('');
+      h.querySelectorAll('button[data-ir]').forEach((b) => b.onclick = async () => {
+        if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Sure?'; return; }
+        try { await ipRemove(st.rules[+b.dataset.ir].domain); await sleep(1500); toast('Rule removed'); ipDraw(); } catch (e) { toast(e.message); }
+      });
+    } catch (e) { /* optional */ }
+  };
+  ipDraw();
+  $('#ipcut').onclick = async () => {
+    const b = $('#ipcut'), o = $('#ipout'); if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Tap again to confirm'; return; }
+    b.disabled = true; o.hidden = false; const L = []; const log = (t) => { L.push(t); o.innerHTML = '<pre class="pv" style="max-height:none">' + esc(L.join('\n')) + '</pre>'; };
+    try {
+      log('UI ' + UI_VER + ' · ' + new Date().toString());
+      const w = await loadWBlocked(); const macs = Array.from(new Set(w.list.map((x) => x.mac)));
+      const devs = await loadDevices();
+      const targets = macs.map((m) => devs.find((d) => d.mac && d.mac.toLowerCase() === m)).filter((d) => d && d.ip);
+      log('Blocked devices: ' + macs.length + ' · with a known IP: ' + targets.length);
+      if (!targets.length) log('None of the blocked devices has an IP right now (they have to be connected once for the router to know it).');
+      for (const d of targets) { log('— ' + d.mac + ' ' + d.ip); const r = await ipCut(d.ip, log); log(r.ok ? 'CUT: ' + d.ip : 'NOT cut: ' + d.ip); if (r.undone) break; }
+    } catch (e) { log('Error: ' + e.message); }
+    try { if (window.ONT && ONT.copy) ONT.copy(L.join('\n')); toast('Result copied. Paste it to me.', 5000); } catch (e) {}
+    b.hidden = true; ipDraw();
   };
   swHandler('wsw', true); swHandler('lsw', false);
   $('#add').onclick = async () => {
