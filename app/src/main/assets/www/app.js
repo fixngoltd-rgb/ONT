@@ -1,5 +1,5 @@
 'use strict';
-const UI_VER = '39';
+const UI_VER = '40';
 /* HG8347R — clean front end for the Huawei HG8347R portal.
    All router traffic goes through the native bridge (window.ONT). */
 
@@ -274,7 +274,7 @@ const FURL = MF + 'set.cgi?x=InternetGatewayDevice.X_HW_Security&RequestFile=htm
 
 /* ------------------------------------------------------------ ui helpers */
 let current = 'home';
-const TITLES = { home: 'Home', devices: 'Devices', wifi: 'Wi-Fi', block: 'Blocking', tools: 'More' };
+const TITLES = { home: 'Home', devices: 'Devices', wifi: 'Wi-Fi', block: 'Blocking', tools: 'More', blocktools: 'Blocking tools' };
 const views = {};
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const jget = (k, d) => { try { return JSON.parse(pref(k, '')) || d; } catch (e) { return d; } };
@@ -304,7 +304,7 @@ let navId = 0;
 function go(tab) {
   current = tab;
   const my = ++navId;
-  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === tab));
+  document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === (tab === 'blocktools' ? 'tools' : tab)));
   $('#view').classList.remove('go');
   $('#title').textContent = TITLES[tab];
   $('#sub').textContent = '';
@@ -547,18 +547,22 @@ async function unblockAny(mac) {
   if (!did) throw new Error('That MAC is not in either filter list');
 }
 async function blockDevice(mac, wireless) {
+  // Both filters, always. The cable (LAN) MAC filter is the one the first app versions used for every device, Wi-Fi ones included.
+  let wOk = false, wOn = false;
   if (wireless) {
-    const w = await loadWBlocked();
-    if (!(w.st.on && w.st.mode !== '1')) { const st = await setWFilter('block'); if (!st.on) return { ok: false, on: false, why: 'filter' }; }
-    const r = await wAdd(mac);
-    const on = (await loadWBlocked()).st.on;
-    return { ok: r.ok, on };
+    try {
+      const w = await loadWBlocked();
+      if (!(w.st.on && w.st.mode !== '1')) await setWFilter('block');
+      const r = await wAdd(mac); wOk = r.ok; wOn = (await loadWBlocked()).st.on;
+    } catch (e) { /* the cable filter below still applies */ }
   }
   const st = filterState((await api('GET', MF + 'macfilter.asp')).body);
   if (!(st.on && st.mode === '0')) await postForm(FURL, { 'x.MacFilterPolicy': '0', 'x.MacFilterRight': '1' });
-  await blockMac(mac); await sleep(1500);
-  const ok = (await loadBlocked()).some((x) => x.mac === mac.toLowerCase());
-  return { ok, on: filterState((await api('GET', MF + 'macfilter.asp')).body).on };
+  if (!(await loadBlocked()).some((x) => x.mac === mac.toLowerCase())) await blockMac(mac);
+  await sleep(1500);
+  const cOk = (await loadBlocked()).some((x) => x.mac === mac.toLowerCase());
+  const cOn = filterState((await api('GET', MF + 'macfilter.asp')).body).on;
+  return { ok: cOk || wOk, on: (cOk && cOn) || (wOk && wOn), cable: cOk && cOn, wifi: wOk && wOn };
 }
 
 /* ---- Internet cut-off by IP (router firewall, page ipincoming). Second method: works even when the Wi-Fi filter is ignored. */
@@ -816,7 +820,41 @@ views.wifi = async function (alive) {
 };
 
 /* ------------------------------------------------------------ blocking */
+
 views.block = async function (alive) {
+  await sweepTimers().catch(() => {});
+  const [lan, wl, on] = await Promise.all([loadBlocked().catch(() => []), loadWBlocked(), assocMacs().catch(() => [])]);
+  if (!alive()) return;
+  const nicks = getNicks(), timers = jget('timers', {});
+  let names = {}; try { (await loadDevices()).forEach((d) => { if (d.mac) names[d.mac.toLowerCase()] = d.name || d.devType || ''; }); } catch (e) { /* optional */ }
+  const macs = Array.from(new Set(wl.list.map((x) => x.mac).concat(lan.map((x) => x.mac))));
+  $('#sub').textContent = macs.length + ' blocked';
+  const row = (m) => '<div class="row"><div class="grow"><div class="name">' + PV(nicks[m] || names[m] || 'Unknown device') + '</div><div class="sm">' + PV(m) + (timers[m] ? ' · ' + left(timers[m]) : '') + '</div></div>' +
+    (on.includes(m) ? '<span class="chip" style="margin-right:8px">On Wi-Fi</span>' : '') + '<button class="b soft sm2" data-u="' + m + '">Unblock</button></div>';
+  $('#view').innerHTML =
+    '<div class="card pad"><div class="sm">To block a device, open the Devices tab, tap it and tap Block. Blocked devices are listed here.</div></div>' +
+    '<div class="sec">Blocked</div><div class="card">' + (macs.length ? macs.map(row).join('') : '<div class="empty">Nothing blocked</div>') + '</div>' +
+    (macs.length ? '<div class="card pad"><button class="b full" id="reapply">Re-apply blocking to all blocked devices</button><div class="sm" style="margin-top:8px">Puts every blocked device back in both router filters and turns them on.</div><div id="rao" style="margin-top:10px" hidden></div></div>' : '') +
+    '<div class="card pad"><h2>Add by MAC address</h2><input class="pv" id="mac" placeholder="aa:bb:cc:dd:ee:ff" autocapitalize="off"><div style="margin-top:12px"><button class="b full" id="add">Block</button></div></div>';
+  $('#add').onclick = async () => {
+    const mac = $('#mac').value.trim();
+    if (!MAC_RE.test(mac)) return toast('That is not a valid MAC address');
+    const b = $('#add'); b.disabled = true; b.textContent = 'Working…';
+    try { const r = await blockDevice(mac, true); toast(r.ok && r.on ? 'Blocked' : r.ok ? 'Added, but the filter is off' : 'The router did not accept it', 5000); go('block'); } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Block'; }
+  };
+  const ra = $('#reapply');
+  if (ra) ra.onclick = async () => {
+    ra.disabled = true; const o = $('#rao'); o.hidden = false; const out = [];
+    for (const m of macs) { try { const r = await blockDevice(m, true); out.push((r.ok && r.on ? 'OK ' : 'FAILED ') + m + (r.cable ? ' · cable filter on' : '') + (r.wifi ? ' · Wi-Fi filter on' : '')); } catch (e) { out.push('ERROR ' + m + ' ' + e.message); } o.textContent = out.join('\n'); }
+    toast('Done', 3000);
+  };
+  document.querySelectorAll('button[data-u]').forEach((b) => b.onclick = async () => {
+    if (b.dataset.c !== '1') { b.dataset.c = '1'; b.textContent = 'Sure?'; return; }
+    try { await unblockAny(b.dataset.u); const t = jget('timers', {}); delete t[b.dataset.u]; jset('timers', t); toast('Unblocked'); go('block'); } catch (e) { toast(e.message); }
+  });
+};
+
+views.blocktools = async function (alive) {
   await sweepTimers().catch(() => {});
   const [lan, wl, lanPage] = await Promise.all([loadBlocked().catch(() => []), loadWBlocked(), api('GET', MF + 'macfilter.asp')]);
   if (!alive()) return;
@@ -843,7 +881,7 @@ views.block = async function (alive) {
       if (wifi) after = await setWFilter(m);
       else { await postForm(FURL, { 'x.MacFilterPolicy': m === 'allow' ? '1' : '0', 'x.MacFilterRight': m === 'off' ? '0' : '1' }); await sleep(1500); after = filterState((await api('GET', MF + 'macfilter.asp')).body); }
       toast(modeOf(after) === m ? 'Filter: ' + ({ off: 'off', block: 'blocklist', allow: 'allowlist' })[m] : 'The router did not change the filter', 4500);
-      go('block');
+      go(current === 'blocktools' ? 'blocktools' : 'block');
     } catch (e) { toast(e.message); }
   });
   $('#chk2').onclick = async () => {
@@ -961,7 +999,7 @@ views.block = async function (alive) {
     try {
       const r = await blockDevice(mac, true);
       toast(r.ok && r.on ? 'Blocked on Wi-Fi' : r.ok ? 'Added, but the filter is off' : 'The router did not accept it', 5000);
-      go('block');
+      go(current === 'blocktools' ? 'blocktools' : 'block');
     } catch (e) { toast(e.message); b.disabled = false; b.textContent = 'Block on Wi-Fi'; }
   };
   document.querySelectorAll('button[data-u]').forEach((b) => b.onclick = async () => {
@@ -969,7 +1007,7 @@ views.block = async function (alive) {
     try {
       const e = (b.dataset.k === 'w' ? wl.list : lan)[+b.dataset.u];
       if (b.dataset.k === 'w') await wRemove(e.domain); else await unblockMac(e.mac);
-      const t = jget('timers', {}); delete t[e.mac]; jset('timers', t); toast('Removed'); go('block');
+      const t = jget('timers', {}); delete t[e.mac]; jset('timers', t); toast('Removed'); go(current === 'blocktools' ? 'blocktools' : 'block');
     } catch (e) { toast(e.message); }
   });
 };
@@ -982,6 +1020,33 @@ const SCAN = [
   '/html/amp/wlanbasic/WlanBasic.asp', '/html/amp/wlanadvance/wlanadvance.asp', '/html/amp/common/wlan_list.asp',
   '/html/ssmp/devmanage/devmanage.asp', '/html/ssmp/accoutcfg/accountcfg.asp', '/html/ssmp/syslog/syslog.asp', '/html/ssmp/time/time.asp',
 ];
+// Walks the router's pages (menu first, then every page those pages link to) and reports everything that could block or cut off a device.
+async function fullScan() {
+  const b = $('#fscan'), st = $('#fscst'); b.disabled = true; const R = []; const seen = new Set(); const queue = [];
+  const add = (p) => { p = '/' + String(p).replace(/^\/+/, '').split('?')[0]; if (/\.(asp|html?)$/i.test(p) && !seen.has(p) && !/GetRandCount|GetLanUser|refreshTime|logout|reboot|restore|upgrade|reset/i.test(p)) { seen.add(p); queue.push(p); } };
+  ['/', '/frame.asp', '/index.asp', '/menu.asp', '/html/ssmp/common/menu.asp', '/html/ssmp/common/menu.html', '/html/ssmp/mainpage/mainpage.asp'].forEach(add);
+  SCAN.forEach(add);
+  const KEY = /cgi|addParameter|setAction|SpecPara|new\s+st\w+\(|Form\./;
+  const BLK = /block|deny|forbid|reject|kick|isolat|InternetAccess|AccessRight|AccessCtrl|BlackList|blacklist|WhiteList|MacFilter|DevAccess|Offline|StopNet|netctrl|禁止|拒绝|黑名单|上网/i;
+  const hits = []; let n = 0;
+  try {
+    while (queue.length && n < 160) {
+      const p = queue.shift(); n++; st.textContent = 'Page ' + n + ' (' + queue.length + ' queued): ' + p;
+      let r; try { r = await api('GET', p, BRH); } catch (e) { continue; }
+      const body = r.body || '';
+      if (r.status !== 200 || body.length < 300 || /<title>\s*Waiting/i.test(body)) continue;
+      body.replace(/["'(=]\s*((?:\/)?html\/[A-Za-z0-9_\/.-]+\.(?:asp|html?))/g, (m, x) => { add(x); return m; });
+      const L = body.split(/\r?\n/); const keep = []; 
+      L.forEach((l, i) => { const t = l.trim(); if (t.length < 3 || /language\[|_language\.|\.css|\.js"/i.test(t)) return; if (BLK.test(t)) hits.push(p + ':' + (i + 1) + ': ' + t.slice(0, 220)); else if (KEY.test(t)) keep.push(t.slice(0, 200)); });
+      R.push('## ' + p + ' [' + body.length + ' bytes]\n' + keep.slice(0, 40).join('\n'));
+      await sleep(120);
+    }
+  } catch (e) { R.push('Stopped: ' + (e.message || e)); }
+  const rep = 'UI ' + UI_VER + ' · whole router scan · ' + n + ' pages read, ' + seen.size + ' found\n\n=== LINES ABOUT BLOCKING / DENY / ACCESS (' + hits.length + ') ===\n' + hits.slice(0, 400).join('\n') + '\n\n=== PAGES ===\n' + R.join('\n\n');
+  try { if (window.ONT && ONT.copy) ONT.copy(rep); } catch (e) { /* ignore */ }
+  st.textContent = 'Done. ' + n + ' pages, ' + hits.length + ' blocking-related lines. Copied: paste it to me.'; b.disabled = false;
+}
+
 views.tools = async function () {
   const canCapture = window.ONT && typeof ONT.openCapture === 'function';
   $('#view').innerHTML =
@@ -995,6 +1060,8 @@ views.tools = async function () {
     '<div class="sec">Wi-Fi settings dump</div><div class="card pad"><div class="sm">Read-only. Reads every Wi-Fi, LAN and DHCP setting page in full (passwords hidden) so I can compare them with the earlier capture. Takes under a minute. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="wdump">Dump Wi-Fi settings</button></div><div class="sm" id="wdst" style="margin-top:8px"></div><pre class="pv" id="wdout" hidden></pre><button class="b ghost sm2" id="wdcp" hidden>Copy result</button></div>' +
     '<div class="sec">IP filter details</div><div class="card pad"><div class="sm">Read-only. Reads how the router\'s IP filter (firewall) page adds a rule, so I can build a block that cuts a device off even while it is connected. The result is copied for you. Paste it to me.</div><div style="margin-top:12px"><button class="b soft full" id="ipcol">Collect IP filter details</button></div><pre class="pv" id="ipout" hidden></pre></div>' +
     '<div class="sec">Wi-Fi air report</div><div class="card pad"><div class="sm">Read-only. Reads which devices are on Wi-Fi with their signal and speed, and which other Wi-Fi networks are nearby on which channel. Copy the result and send it to me.</div><div style="margin-top:12px"><button class="b soft full" id="aircol">Collect Wi-Fi air report</button></div><pre class="pv" id="airout" hidden></pre><button class="b ghost sm2" id="aircp" hidden>Copy result</button></div>' +
+    '<div class="sec">Blocking tools</div><div class="card pad"><div class="sm">Filter switches, Check and fix, Force block, cut internet by IP.</div><div style="margin-top:12px"><button class="b soft full" id="btools">Open blocking tools</button></div></div>' +
+    '<div class="sec">Scan whole router</div><div class="card pad"><div class="sm">Read-only. Walks every page of the router, lists every way it can block or cut off a device, and records the exact request each one sends. Takes a few minutes. The result is copied for you.</div><div style="margin-top:12px"><button class="b full" id="fscan">Scan whole router</button></div><div class="sm" id="fscst" style="margin-top:10px"></div></div>' +
     '<div class="sec">Add more features</div><div class="card pad"><div class="sm">Opens the router\'s original pages in here and records what each button sends, so I can build it. Passwords are hidden in the log.</div>' +
     '<div style="margin-top:14px"><button class="b soft full" id="cap">' + (canCapture ? 'Record from the old portal' : 'Needs the latest app install') + '</button></div>' +
     '<div style="margin-top:10px"><button class="b soft full" id="scan">Scan router pages</button></div><pre class="pv" id="scanout" hidden></pre><button class="b ghost sm2" id="scancp" hidden>Copy result</button></div>' +
@@ -1059,6 +1126,8 @@ views.tools = async function () {
     b.disabled = false;
   };
   const showDiag = (on) => { $('#dgwrap').hidden = !on; $('#mm1').hidden = on; $('#mm2').hidden = on; $('#view').scrollTop = 0; };
+  $('#btools').onclick = () => go('blocktools');
+  $('#fscan').onclick = fullScan;
   $('#dopen').onclick = () => showDiag(true); $('#dback').onclick = () => showDiag(false);
   const SCH = '/html/amp/wifische/WlanSchedule.asp';
   $('#schcol').onclick = async () => {
