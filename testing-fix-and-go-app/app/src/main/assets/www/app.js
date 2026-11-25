@@ -96,7 +96,7 @@ function ukParts(iso){
 }
 function ukDate(iso){ const p = ukParts(iso); return p ? p.date : ''; }
 // time picker: half-hour steps only (value stays HH:MM); an existing off-grid time is kept as an extra option
-function timeOptsHtml(cur){ const vals = []; for(let i = 0; i < 48; i++) vals.push(String(Math.floor(i / 2)).padStart(2, '0') + ':' + (i % 2 ? '30' : '00')); if(cur && !vals.includes(cur)){ vals.push(cur); vals.sort(); } return '<option value="">--:--</option>' + vals.map(v => '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + v + '</option>').join(''); }
+function timeOptsHtml(cur){ const vals = []; for(let i = 12; i < 44; i++) vals.push(String(Math.floor(i / 2)).padStart(2, '0') + ':' + (i % 2 ? '30' : '00')); if(cur && !vals.includes(cur)){ vals.push(cur); vals.sort(); } return '<option value="">--:--</option>' + vals.map(v => '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + v + '</option>').join(''); }
 function ukTime(iso){ const p = ukParts(iso); return (p && p.hasTime) ? p.time : ''; }
 function ukToIso(dateStr, timeStr){
   if(!dateStr) return null;
