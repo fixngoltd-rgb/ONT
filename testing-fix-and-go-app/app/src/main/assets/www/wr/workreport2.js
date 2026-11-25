@@ -129,7 +129,7 @@
     function smallHeader(){
       topBand();
       const lw = 70; doc.addImage(A.logo, 'JPEG', M, 16, lw, lw * LOGO_AR, undefined, 'FAST');
-      font(true, 9); ink(C.navy); doc.text('Work Completion Report', W - M, 34, { align: 'right' });
+      font(true, 9); ink(C.navy); doc.text(opts.kind === 'quote' ? 'Quotation' : 'Work Completion Report', W - M, 34, { align: 'right' });
       font(false, 8); ink(C.grey); doc.text(address + (dateStr ? '  |  ' + dateStr : ''), W - M, 46, { align: 'right' });
       stroke(C.line); doc.setLineWidth(0.6); doc.line(M, 60, W - M, 60);
     }
@@ -138,7 +138,7 @@
     topBand();
     const lw = 150, lh = lw * LOGO_AR;
     doc.addImage(A.logo, 'JPEG', M, 26, lw, lh, undefined, 'FAST');
-    font(true, 22); ink(C.navy); doc.text('Work Completion Report', W - M, 62, { align: 'right' });
+    font(true, 22); ink(C.navy); doc.text(opts.kind === 'quote' ? 'Quotation' : 'Work Completion Report', W - M, 62, { align: 'right' });
     font(false, 9); ink(C.grey); doc.text('Fix&Go Ltd', W - M, 80, { align: 'right' });
     doc.text('fixngoltd@gmail.com   |   01217203344', W - M, 92, { align: 'right' });
     let y = 26 + lh + 16;
@@ -151,7 +151,7 @@
       while(out.length > 3){ const n = out.length; out.splice(n - 2, 2, out[n - 2] + ' ' + out[n - 1]); }
       return out.map(l => doc.splitTextToSize(l, 180)).reduce((a, b) => a.concat(b), []);
     })();
-    const cols = [['PROPERTY', addrLines, M], ['CLIENT', CLIENT, M + 205], ['DATE COMPLETED', dateStr ? [dateStr] : [''], M + 400]];
+    const cols = [['PROPERTY', addrLines, M], ['CLIENT', CLIENT, M + 205], [opts.kind === 'quote' ? 'DATE' : 'DATE COMPLETED', dateStr ? [dateStr] : [''], M + 400]];
     let rowH = 0;
     cols.forEach(([lab, lines, x]) => {
       font(true, 7.5); ink(C.purple); doc.text(lab, x, y);

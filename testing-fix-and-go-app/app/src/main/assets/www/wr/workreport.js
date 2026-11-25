@@ -41,6 +41,8 @@
     [/^(additional\s+)?(findings?|observations?)$/i, 'Findings'],
     [/^(recommendations?|advice|next\s+steps)$/i, 'Recommendations'],
     [/^change\s+of\s+scope$/i, 'Change of Scope'],
+    [/^(scope(\s+of\s+works?)?|proposed\s+works?|works?\s+(proposed|required|to\s+be\s+carried\s+out))$/i, 'Scope of Works'],
+    [/^(price|pricing|cost|total(\s+cost)?|quotation\s+price)$/i, 'Price'],
     [/^additional\s+(notes?|items?|works?)$/i, null]
   ];
   const SECTION_RE = /^(issues reported|work carried out|outcome|findings|recommendations|change of scope)\s*(\([^)]*\))?\s*:?$/i;
