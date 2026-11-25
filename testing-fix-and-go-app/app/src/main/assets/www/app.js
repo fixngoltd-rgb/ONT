@@ -2220,6 +2220,109 @@ async function qlUploadPicked(inp){
   QL.dirty = true; QL.msg = ''; qlRender();
 }
 /* read-only full view of a received quote */
+async function qlPdfImg(url){
+  try {
+    const r = await fetch(url); if(!r.ok) return null;
+    const bm = await createImageBitmap(await r.blob());
+    const k = Math.min(1, 700 / Math.max(bm.width, bm.height));
+    const cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(bm.width * k)); cv.height = Math.max(1, Math.round(bm.height * k));
+    const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height); g.drawImage(bm, 0, 0, cv.width, cv.height);
+    return { data: cv.toDataURL('image/jpeg', 0.82), w: cv.width, h: cv.height };
+  } catch(e){ return null; }
+}
+async function qlViewPdf(id){
+  const r = QL && QL.reqs.find(x => x.id === id); if(!r) return;
+  const btn = document.getElementById('ql-pdf-btn'); if(btn){ btn.disabled = true; btn.textContent = 'Building...'; }
+  try {
+    await loadWrLib();
+    const J = window.jspdf && window.jspdf.jsPDF; if(!J) throw new Error('PDF library not loaded');
+    const ip = Array.isArray(r.item_prices) ? r.item_prices : [];
+    const sc = Array.isArray(r.scope) ? r.scope : [];
+    const when = r.submitted_at ? new Date(r.submitted_at).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+    const doc = new J({ unit: 'pt', format: 'a4', orientation: 'portrait', compress: true });
+    const W = 595, H = 842, M = 36, CW = W - 2 * M, TXT = [20, 24, 31], GREY = [107, 114, 128], LINE = [223, 227, 233], BLUE = [31, 111, 235];
+    const font = (b, sz, c) => { doc.setFont('helvetica', b ? 'bold' : 'normal'); doc.setFontSize(sz); const cc = c || TXT; doc.setTextColor(cc[0], cc[1], cc[2]); };
+    const wrap = (t, w) => doc.splitTextToSize(String(t || ''), w);
+    let y = M;
+    // header
+    font(true, 8, GREY); doc.text('QUOTE FROM', M, y + 7);
+    font(true, 22, TXT); doc.text(String(r.responder_name || r.technician || ''), M, y + 30);
+    const subTxt = (r.postcode || '') + (r.title ? ' - ' + r.title : '') + (when ? ' - submitted ' + when : '');
+    font(false, 9.5, GREY); wrap(subTxt, CW).forEach((l, i) => doc.text(l, M, y + 46 + i * 12));
+    y += 46 + wrap(subTxt, CW).length * 12 + 10;
+    // total card
+    const noteLines = r.note ? wrap(r.note, CW - 190) : [];
+    const totH = Math.max(52, 30 + noteLines.length * 12 + 14);
+    doc.setDrawColor(LINE[0], LINE[1], LINE[2]); doc.setLineWidth(0.8); doc.roundedRect(M, y, CW, totH, 7, 7, 'S');
+    font(true, 7.5, GREY); doc.text('TOTAL QUOTED', M + 14, y + 17);
+    font(true, 24, TXT); doc.text(qlMoney(r.price), M + 14, y + 42);
+    if(noteLines.length){ font(true, 7.5, GREY); doc.text('THEIR NOTES', M + 180, y + 17); font(false, 10, TXT); noteLines.forEach((l, i) => doc.text(l, M + 180, y + 31 + i * 12)); }
+    y += totH + 14;
+    // items
+    const LW = 330, RX = M + LW + 24, RW = CW - LW - 24 - 14;
+    for(let n = 0; n < sc.length; n++){
+      const it = sc[n], p = ip[n] || {};
+      const titleL = wrap(it.title || '', LW - 44), textL = wrap(it.text || '', LW - 14);
+      const media = [];
+      for(const u of (it.photos || [])){ const im = await qlPdfImg(u); if(im) media.push({ im, w: 58, h: 76 }); }
+      for(const u of (it.videos || [])){ let im = null; try { im = await qlPdfImg(await wrVideoPoster(u)); } catch(e){} if(im) media.push({ im, w: 98, h: 74 }); }
+      // lay media out in rows inside the left column
+      const rows = []; let row = [], rw = 0;
+      media.forEach(m => { if(row.length && rw + m.w + 6 > LW - 14){ rows.push(row); row = []; rw = 0; } row.push(m); rw += m.w + 6; });
+      if(row.length) rows.push(row);
+      const mediaH = rows.reduce((a, rr) => a + Math.max.apply(null, rr.map(m => m.h)) + 6, 0);
+      const planL = wrap(p.plan || 'Nothing written', RW);
+      const leftH = 14 + titleL.length * 14 + (textL.length ? 6 + textL.length * 12.5 : 0) + (mediaH ? 8 + mediaH : 0) + 8;
+      const rightH = 14 + 10 + 22 + 10 + 12 + planL.length * 12.5 + 8;
+      const cardH = Math.max(leftH, rightH, 60);
+      if(y + cardH > H - M - 14){ doc.addPage(); y = M; }
+      doc.setDrawColor(LINE[0], LINE[1], LINE[2]); doc.setLineWidth(0.8); doc.roundedRect(M, y, CW, cardH, 7, 7, 'S');
+      doc.line(M + LW + 12, y + 8, M + LW + 12, y + cardH - 8);
+      // left
+      let ly = y + 14;
+      doc.setFillColor(BLUE[0], BLUE[1], BLUE[2]); doc.circle(M + 21, ly + 4, 8.5, 'F');
+      font(true, 8.5, [255, 255, 255]); doc.text(String(n + 1), M + 21, ly + 7, { align: 'center' });
+      font(true, 11, TXT); titleL.forEach((l, i) => doc.text(l, M + 36, ly + 8 + i * 14));
+      ly += titleL.length * 14 + 6;
+      if(textL.length){ font(false, 9.5, [55, 65, 81]); textL.forEach((l, i) => doc.text(l, M + 14, ly + 8 + i * 12.5)); ly += textL.length * 12.5 + 8; }
+      rows.forEach(rr => {
+        let x = M + 14; const rh = Math.max.apply(null, rr.map(m => m.h));
+        rr.forEach(m => {
+          const sc2 = Math.max(m.w / m.im.w, m.h / m.im.h), iw = m.im.w * sc2, ih = m.im.h * sc2;
+          doc.saveGraphicsState(); doc.roundedRect(x, ly, m.w, m.h, 5, 5, null); doc.clip(); doc.discardPath();
+          doc.addImage(m.im.data, 'JPEG', x + (m.w - iw) / 2, ly + (m.h - ih) / 2, iw, ih, undefined, 'FAST'); doc.restoreGraphicsState();
+          x += m.w + 6;
+        });
+        ly += rh + 6;
+      });
+      // right
+      let ry = y + 14;
+      font(true, 7.5, GREY); doc.text('THEIR PRICE', RX, ry + 6);
+      font(true, 16, TXT); if(p.price != null) doc.text(qlMoney(p.price), RX, ry + 26); else { font(false, 10, [156, 163, 175]); doc.text('not priced', RX, ry + 24); }
+      ry += 42;
+      font(true, 7.5, GREY); doc.text('WHAT THEY WILL DO', RX, ry + 6);
+      font(false, 9.5, p.plan ? TXT : [156, 163, 175]); planL.forEach((l, i) => doc.text(l, RX, ry + 20 + i * 12.5));
+      y += cardH + 10;
+    }
+    if(!sc.length){ font(false, 10, GREY); doc.text('No scope items.', M, y + 10); }
+    const pages = doc.getNumberOfPages();
+    for(let i = 1; i <= pages; i++){ doc.setPage(i); font(false, 8, GREY); doc.text('Fix & Go Ltd  |  ' + i + ' / ' + pages, W / 2, H - 18, { align: 'center' }); }
+    const j = QL.job || {};
+    const lead = String(j.external_job_id || '').trim() || String(j.address || '').split(',')[0].trim() || j.ref || 'Job';
+    const fname = (lead + ' ' + (r.responder_name || r.technician || 'Technician') + ' Quote.pdf').replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ').trim();
+    const blob = doc.output('blob');
+    const filePath = `${j.id}/${Date.now()}_${fname}`;
+    const { error: upErr } = await sb.storage.from('job-files').upload(filePath, blob, { contentType: 'application/pdf' });
+    if(upErr) throw new Error('Upload failed: ' + upErr.message);
+    const { data: urlData } = sb.storage.from('job-files').getPublicUrl(filePath);
+    await sb.from('job_files').insert([{ job_id: j.id, file_name: fname, file_url: urlData.publicUrl, mime_type: 'application/pdf' }]);
+    WR_LAST_URL = urlData.publicUrl;
+    const ok = await copyText(WR_LAST_URL);
+    showToast('Quote PDF attached to the job' + (ok ? ' and link copied' : ''));
+    openViewer(urlData.publicUrl, fname, 'application/pdf');
+  } catch(e){ showToast('Could not build the PDF: ' + (e.message || e)); }
+  if(btn){ btn.disabled = false; btn.textContent = 'Download PDF'; }
+}
 function qlViewClose(){ document.getElementById('ql-view-screen').classList.remove('open'); }
 function qlView(id){
   if(!QL) return;
@@ -2241,7 +2344,7 @@ function qlView(id){
     <div class="ql-vcard"><div style="font-size:0.72rem;font-weight:800;text-transform:uppercase;color:var(--muted);">Total quoted</div><div class="ql-price" style="font-size:2rem;">${qlMoney(r.price)}</div>
       <div style="font-size:0.8rem;color:var(--muted);">${escHtml(r.postcode || '')}${when ? ' - submitted ' + when : ''}</div>
       ${r.note ? `<label class="ql-lbl">Their notes</label><div style="font-size:0.92rem;">${escHtml(r.note)}</div>` : ''}
-      <div class="ql-row"><button class="ql-btn teal" onclick="qlUsePrice('${r.id}')">Use as our cost</button></div></div>
+      <div class="ql-row"><button class="ql-btn teal" onclick="qlUsePrice('${r.id}')">Use as our cost</button><button class="ql-btn" id="ql-pdf-btn" onclick="qlViewPdf('${r.id}')">Download PDF</button></div></div>
     ${rows || '<div class="ql-note">No scope items.</div>'}`;
   document.getElementById('ql-view-screen').classList.add('open');
 }
